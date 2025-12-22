@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "vision-mcp": {
+      "type": "remote",
+      "url": "https://docs.z.ai/devpack/mcp/vision-mcp-server"
+    },
+    "search-mcp": {
+      "type": "remote",
+      "url": "https://docs.z.ai/devpack/mcp/search-mcp-server"
+    },
+    "reader-mcp": {
+      "type": "remote",
+      "url": "https://docs.z.ai/devpack/mcp/reader-mcp-server"
+    }
+  }
+}
