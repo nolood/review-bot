@@ -149,7 +149,184 @@ volumes:
     driver: local
 ```
 
-### 3. Kubernetes Deployment
+### 3. Webhook Server Deployment
+
+For real-time review triggering via GitLab webhooks (alternative to CI/CD).
+
+**Key Differences from CI/CD:**
+- Server runs continuously, listens for webhook events
+- Reviews start immediately when MRs are created/updated
+- No pipeline overhead or job scheduling delays
+- Requires public-facing URL for GitLab to reach
+
+#### Prerequisites
+- Public or accessible domain for webhook endpoint
+- Valid HTTPS certificate (strongly recommended)
+- Persistent service (not terminating)
+- Firewall rules to allow GitLab to reach your endpoint
+
+#### Docker Webhook Server
+
+```bash
+# Run webhook server
+docker run -d \
+  --name review-bot-webhook \
+  -p 8000:8000 \
+  -p 8080:8080 \
+  -e GITLAB_TOKEN="your_token" \
+  -e GLM_API_KEY="your_key" \
+  -e WEBHOOK_ENABLED="true" \
+  -e WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  -e WEBHOOK_VALIDATE_SIGNATURE="true" \
+  -e SERVER_HOST="0.0.0.0" \
+  -e SERVER_PORT="8000" \
+  review-bot:latest
+```
+
+#### Docker Compose for Webhook Server
+
+```yaml
+version: '3.8'
+
+services:
+  review-bot-webhook:
+    image: review-bot:latest
+    container_name: review-bot-webhook
+    restart: unless-stopped
+    ports:
+      - "8000:8000"    # Main webhook endpoint
+      - "8080:8080"    # Monitoring/metrics
+    environment:
+      # GitLab
+      GITLAB_TOKEN: ${GITLAB_TOKEN}
+      GITLAB_API_URL: https://gitlab.com/api/v4
+
+      # GLM
+      GLM_API_KEY: ${GLM_API_KEY}
+      GLM_API_URL: https://api.z.ai/api/paas/v4/chat/completions
+
+      # Webhook Configuration
+      WEBHOOK_ENABLED: "true"
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      WEBHOOK_VALIDATE_SIGNATURE: "true"
+      WEBHOOK_SKIP_DRAFT: "true"
+      WEBHOOK_SKIP_WIP: "true"
+      WEBHOOK_TRIGGER_ACTIONS: "open,update,reopen"
+
+      # Server
+      SERVER_HOST: "0.0.0.0"
+      SERVER_PORT: "8000"
+      LOG_LEVEL: "INFO"
+
+      # Processing
+      MAX_CONCURRENT_REVIEWS: "5"
+      REVIEW_TIMEOUT_SECONDS: "300"
+
+      # Deduplication
+      DEDUPLICATION_STRATEGY: "DELETE_SUMMARY_ONLY"
+
+    volumes:
+      # Persistent data for commit tracking
+      - webhook-data:/data
+      - ./logs:/app/logs
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  webhook-data:
+    driver: local
+```
+
+#### Webhook with Reverse Proxy (NGINX)
+
+For public accessibility with TLS:
+
+```nginx
+# /etc/nginx/sites-available/review-bot-webhook
+upstream review_bot_backend {
+    server 127.0.0.1:8000;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name review-bot.example.com;
+
+    location / {
+        return 301 https://$server_name$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name review-bot.example.com;
+
+    # SSL certificates (use Let's Encrypt)
+    ssl_certificate /etc/letsencrypt/live/review-bot.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/review-bot.example.com/privkey.pem;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    # Webhook endpoint
+    location /webhook/gitlab {
+        proxy_pass http://review_bot_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 30s;
+    }
+
+    # Health check
+    location /health {
+        proxy_pass http://review_bot_backend;
+        access_log off;
+    }
+
+    # API endpoints
+    location /api {
+        proxy_pass http://review_bot_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+Enable and restart:
+```bash
+sudo ln -s /etc/nginx/sites-available/review-bot-webhook /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+#### Configuration for GitLab
+
+In your GitLab project:
+
+1. Settings → Integrations → Webhooks
+2. URL: `https://review-bot.example.com/webhook/gitlab`
+3. Secret token: Use value from `WEBHOOK_SECRET` environment variable
+4. Trigger: Merge request events
+5. SSL verification: Enabled
+
+See [Webhook Setup Guide](webhook_setup.md) for detailed configuration.
+
+### 4. Kubernetes Deployment
 
 For scalable, managed deployment.
 
@@ -238,7 +415,7 @@ data:
   GLM_API_KEY: <base64-encoded-key>
 ```
 
-### 4. Manual/Local Deployment
+### 5. Manual/Local Deployment
 
 For development or testing.
 

@@ -52,11 +52,12 @@ class GLMClient:
         model: str = "glm-4",
         temperature: float = 0.3,
         max_tokens: int = 4000,
-        timeout: int = 60
+        timeout: int = 60,
+        enable_thinking: bool = False
     ):
         """
         Initialize GLM API client.
-        
+
         Args:
             api_key: GLM API key (defaults to GLM_API_KEY env var)
             api_url: GLM API URL (defaults to GLM_API_URL env var or standard URL)
@@ -64,6 +65,7 @@ class GLMClient:
             temperature: Temperature for response generation (0.0-1.0)
             max_tokens: Maximum tokens in response
             timeout: Request timeout in seconds
+            enable_thinking: Enable thinking mode for deeper analysis (default: False)
         """
         self.api_key = api_key or os.getenv("GLM_API_KEY")
         if not self.api_key:
@@ -77,7 +79,8 @@ class GLMClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
-        
+        self.enable_thinking = enable_thinking
+
         # Token usage tracking
         self.token_usage: List[TokenUsage] = []
         
@@ -143,6 +146,10 @@ class GLMClient:
             "max_tokens": self.max_tokens,
             "stream": stream
         }
+
+        # Add thinking parameter only if enabled
+        if self.enable_thinking:
+            request_data["thinking"] = True
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -151,7 +158,13 @@ class GLMClient:
         
         api_logger.logger.info(
             f"Analyzing code with {review_type.value} review type, "
-            f"estimated tokens: {estimated_tokens}"
+            f"estimated tokens: {estimated_tokens}, thinking: {self.enable_thinking}"
+        )
+
+        # Log request data for debugging (without sensitive info)
+        api_logger.logger.debug(
+            f"Request data: model={self.model}, temperature={self.temperature}, "
+            f"max_tokens={self.max_tokens}, stream={stream}, thinking={self.enable_thinking}"
         )
         
         try:
@@ -203,6 +216,8 @@ class GLMClient:
             except httpx.HTTPStatusError as e:
                 error_msg = f"HTTP error: {e.response.status_code}"
                 if e.response.text:
+                    # Log the full response for debugging
+                    api_logger.logger.error(f"API error response: {e.response.text}")
                     try:
                         error_detail = e.response.json()
                         error_msg += f" - {error_detail.get('error', {}).get('message', e.response.text)}"
@@ -217,32 +232,36 @@ class GLMClient:
     def _get_default_prompt(self) -> str:
         """
         Get the default user prompt for code analysis.
-        
+
         Returns:
             Default prompt string requesting JSON-formatted analysis
         """
-        return """Analyze this code and provide structured feedback in JSON format:
+        return """Найдите ВСЕ проблемы, баги и потенциальные улучшения в этом коде.
 
+**Обязательно проверьте**:
+- Баги и потенциальные ошибки времени выполнения
+- Уязвимости безопасности
+- Проблемы производительности
+- Плохую обработку ошибок и граничных случаев
+- Дублирование кода
+- Нарушения лучших практик
+- Сложный или неясный код
+
+**Формат ответа - ТОЛЬКО JSON**:
 {
   "comments": [
     {
-      "file": "path/to/file.py",
-      "line": 42,
-      "comment": "Consider using list comprehension here",
-      "type": "suggestion|issue|praise",
-      "severity": "low|medium|high|critical"
+      "file": "путь/к/файлу.py",
+      "line": "42",
+      "comment": "Подробное описание проблемы + объяснение последствий + решение",
+      "type": "issue",
+      "severity": "high"
     }
   ]
 }
 
-Focus on:
-- Code quality and maintainability
-- Potential bugs or issues
-- Performance considerations
-- Security best practices
-- Code style and conventions
-
-Provide specific, actionable feedback with line numbers when applicable."""
+НЕ пишите о том, что сделано хорошо. Только проблемы и улучшения.
+Каждый комментарий должен включать: ЧТО не так, ПОЧЕМУ это проблема, КАК исправить."""
     
     def _parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """

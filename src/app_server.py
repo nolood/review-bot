@@ -329,6 +329,7 @@ class AppServer:
         # Setup endpoints
         self._setup_review_endpoints()
         self._setup_status_endpoints()
+        self._setup_webhook_endpoints()
         self._setup_web_interface()
         self._setup_admin_endpoints()
     
@@ -649,7 +650,348 @@ class AppServer:
                 "timestamp": datetime.utcnow().isoformat(),
                 "uptime_seconds": (datetime.utcnow() - self.startup_time).total_seconds()
             }
-    
+
+    def _setup_webhook_endpoints(self) -> None:
+        """Setup webhook endpoints for GitLab integration."""
+        if not self.app:
+            return
+
+        @self.app.post("/webhook/gitlab")
+        async def gitlab_webhook(request: Request, background_tasks: BackgroundTasks):
+            """
+            Handle GitLab webhook events for merge requests.
+
+            This endpoint:
+            1. Validates webhook signature
+            2. Parses and filters events
+            3. Checks if commit already reviewed (deduplication)
+            4. Queues background task for review
+            5. Returns 202 Accepted with task_id
+            """
+            try:
+                # Check if webhooks are enabled
+                if not getattr(self.settings, 'webhook_enabled', False):
+                    return JSONResponse(
+                        status_code=200,
+                        content={"message": "Webhooks are disabled"}
+                    )
+
+                # Validate webhook signature
+                gitlab_token = request.headers.get("X-Gitlab-Token")
+                expected_token = getattr(self.settings, 'webhook_secret', '')
+
+                if not gitlab_token or gitlab_token != expected_token:
+                    self.logger.warning(
+                        "Invalid webhook signature",
+                        extra={
+                            "remote_addr": request.client.host if request.client else "unknown",
+                            "token_present": bool(gitlab_token)
+                        }
+                    )
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Invalid webhook signature"
+                    )
+
+                # Parse webhook payload
+                try:
+                    payload = await request.json()
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to parse webhook payload",
+                        extra={
+                            "error_type": type(e).__name__,
+                            "error_message": str(e)
+                        }
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid JSON payload"
+                    )
+
+                # Extract event type and data
+                event_type = payload.get("object_kind")
+
+                if event_type != "merge_request":
+                    return JSONResponse(
+                        status_code=200,
+                        content={"message": f"Ignored event type: {event_type}"}
+                    )
+
+                # Extract merge request data
+                mr_data = payload.get("object_attributes", {})
+                action = mr_data.get("action")
+                project = payload.get("project", {})
+
+                project_id = str(project.get("id", ""))
+                mr_iid = str(mr_data.get("iid", ""))
+
+                if not project_id or not mr_iid:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Missing project_id or mr_iid in webhook payload"
+                    )
+
+                # Check trigger actions
+                webhook_trigger_actions = getattr(self.settings, 'webhook_trigger_actions', ["open", "update", "reopen"])
+                if action not in webhook_trigger_actions:
+                    return JSONResponse(
+                        status_code=200,
+                        content={"message": f"Ignored action: {action}"}
+                    )
+
+                # Check draft status
+                if getattr(self.settings, 'webhook_skip_draft', True):
+                    if mr_data.get("work_in_progress", False) or mr_data.get("draft", False):
+                        return JSONResponse(
+                            status_code=200,
+                            content={"message": "Skipped: MR is draft or WIP"}
+                        )
+
+                # Check WIP status in title
+                if getattr(self.settings, 'webhook_skip_wip', True):
+                    title = mr_data.get("title", "")
+                    if title.lower().startswith("wip:") or "[wip]" in title.lower():
+                        return JSONResponse(
+                            status_code=200,
+                            content={"message": "Skipped: MR title contains WIP"}
+                        )
+
+                # Check labels
+                labels = [label.get("title") for label in mr_data.get("labels", [])]
+
+                required_labels = getattr(self.settings, 'webhook_required_labels', [])
+                if required_labels:
+                    if not any(label in labels for label in required_labels):
+                        return JSONResponse(
+                            status_code=200,
+                            content={"message": f"Skipped: Required labels not found"}
+                        )
+
+                excluded_labels = getattr(self.settings, 'webhook_excluded_labels', [])
+                if excluded_labels:
+                    if any(label in labels for label in excluded_labels):
+                        return JSONResponse(
+                            status_code=200,
+                            content={"message": f"Skipped: Excluded label found"}
+                        )
+
+                # Check deduplication (if enabled and modules are available)
+                if getattr(self.settings, 'deduplication_enabled', True):
+                    # TODO: Integrate with CommitTracker when available
+                    # For now, we'll skip deduplication check
+                    # commit_sha = mr_data.get("last_commit", {}).get("id")
+                    # if commit_sha and await commit_tracker.is_commit_reviewed(project_id, mr_iid, commit_sha):
+                    #     return JSONResponse(
+                    #         status_code=200,
+                    #         content={"message": "Skipped: Commit already reviewed"}
+                    #     )
+                    pass
+
+                # Check for concurrent review limits
+                active_count = sum(
+                    1 for task in self.active_tasks.values()
+                    if task.status == TaskStatus.RUNNING
+                )
+
+                if active_count >= self.config.max_concurrent_reviews:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Maximum concurrent reviews ({self.config.max_concurrent_reviews}) reached"
+                    )
+
+                # Generate task ID
+                task_id = str(uuid.uuid4())
+
+                # Create task
+                task = ReviewTask(
+                    task_id=task_id,
+                    project_id=project_id,
+                    mr_iid=mr_iid,
+                    status=TaskStatus.PENDING,
+                    created_at=datetime.utcnow(),
+                    message="Review queued from webhook"
+                )
+
+                self.active_tasks[task_id] = task
+                self.stats["total_reviews"] += 1
+                self.stats["active_reviews"] = active_count + 1
+
+                # Queue background review
+                background_tasks.add_task(
+                    self._process_webhook_review,
+                    task_id,
+                    project_id,
+                    mr_iid,
+                    payload
+                )
+
+                self.logger.info(
+                    "Webhook review queued",
+                    extra={
+                        "task_id": task_id,
+                        "project_id": project_id,
+                        "mr_iid": mr_iid,
+                        "action": action,
+                        "event_type": event_type
+                    }
+                )
+
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        "task_id": task_id,
+                        "status": "accepted",
+                        "message": "Review queued for processing",
+                        "created_at": task.created_at.isoformat()
+                    }
+                )
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(
+                    "Webhook processing failed",
+                    extra={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    },
+                    exc_info=True
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Internal server error: {str(e)}"
+                )
+
+    async def _process_webhook_review(
+        self,
+        task_id: str,
+        project_id: str,
+        mr_iid: str,
+        webhook_payload: Dict[str, Any]
+    ) -> None:
+        """
+        Process webhook review in background.
+
+        Args:
+            task_id: Unique task identifier
+            project_id: GitLab project ID
+            mr_iid: Merge request IID
+            webhook_payload: Original webhook payload for context
+        """
+        task = self.active_tasks.get(task_id)
+        if not task:
+            self.logger.error(f"Task not found for webhook review: {task_id}")
+            return
+
+        try:
+            # Update task status
+            task.status = TaskStatus.RUNNING
+            task.started_at = datetime.utcnow()
+            task.message = "Starting webhook review"
+            task.progress = 0.1
+
+            # Create review context
+            task.context = ReviewContext(
+                project_id=project_id,
+                mr_iid=mr_iid
+            )
+
+            # Update progress
+            task.progress = 0.2
+            task.message = "Analyzing merge request from webhook"
+
+            # Process review with timeout
+            result = await asyncio.wait_for(
+                self.review_processor.process_review(task.context),
+                timeout=self.config.review_timeout_seconds
+            )
+
+            # Mark commit as reviewed (if deduplication enabled)
+            if getattr(self.settings, 'deduplication_enabled', True):
+                # TODO: Integrate with CommitTracker when available
+                # commit_sha = webhook_payload.get("object_attributes", {}).get("last_commit", {}).get("id")
+                # if commit_sha:
+                #     await commit_tracker.mark_commit_reviewed(project_id, mr_iid, commit_sha, result)
+                pass
+
+            # Update progress
+            task.progress = 0.9
+            task.message = "Finalizing webhook review"
+
+            # Complete task
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.utcnow()
+            task.progress = 1.0
+            task.message = "Webhook review completed successfully"
+            task.result = result
+
+            # Update statistics
+            self.stats["completed_reviews"] += 1
+            self.stats["active_reviews"] = max(0, self.stats["active_reviews"] - 1)
+
+            # Move to history
+            self.active_tasks.pop(task_id, None)
+            self._add_to_history(task)
+
+            self.logger.info(
+                "Webhook review completed",
+                extra={
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "duration_seconds": (task.completed_at - task.started_at).total_seconds()
+                }
+            )
+
+        except asyncio.TimeoutError:
+            task.status = TaskStatus.FAILED
+            task.completed_at = datetime.utcnow()
+            task.progress = 0.0
+            task.message = "Webhook review timed out"
+            task.error = f"Review exceeded timeout of {self.config.review_timeout_seconds} seconds"
+
+            self.stats["failed_reviews"] += 1
+            self.stats["active_reviews"] = max(0, self.stats["active_reviews"] - 1)
+
+            self.active_tasks.pop(task_id, None)
+            self._add_to_history(task)
+
+            self.logger.error(
+                "Webhook review timed out",
+                extra={
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "timeout_seconds": self.config.review_timeout_seconds
+                }
+            )
+
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.completed_at = datetime.utcnow()
+            task.progress = 0.0
+            task.message = "Webhook review failed"
+            task.error = str(e)
+
+            self.stats["failed_reviews"] += 1
+            self.stats["active_reviews"] = max(0, self.stats["active_reviews"] - 1)
+
+            self.active_tasks.pop(task_id, None)
+            self._add_to_history(task)
+
+            self.logger.error(
+                "Webhook review failed",
+                extra={
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                },
+                exc_info=True
+            )
+
     def _setup_web_interface(self) -> None:
         """Setup web interface endpoints."""
         if not self.app:

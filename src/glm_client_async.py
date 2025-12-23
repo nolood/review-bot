@@ -42,11 +42,11 @@ class TokenUsage:
 class AsyncGLMClient:
     """
     Async client for interacting with GLM API for code review analysis.
-    
+
     This client handles async API communication, response parsing, and error handling
     for code review tasks using the GLM model with concurrent processing capabilities.
     """
-    
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -55,11 +55,12 @@ class AsyncGLMClient:
         temperature: float = 0.3,
         max_tokens: int = 4000,
         timeout: int = 60,
-        limits: Optional[httpx.Limits] = None
+        limits: Optional[httpx.Limits] = None,
+        enable_thinking: bool = False
     ):
         """
         Initialize async GLM API client.
-        
+
         Args:
             api_key: GLM API key (defaults to GLM_API_KEY env var)
             api_url: GLM API URL (defaults to GLM_API_URL env var or standard URL)
@@ -68,6 +69,7 @@ class AsyncGLMClient:
             max_tokens: Maximum tokens in response
             timeout: Request timeout in seconds
             limits: Connection limits for HTTP client
+            enable_thinking: Enable thinking mode for deeper analysis (default: False)
         """
         self.api_key = api_key or os.getenv("GLM_API_KEY")
         if not self.api_key:
@@ -81,13 +83,14 @@ class AsyncGLMClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
-        
+        self.enable_thinking = enable_thinking
+
         # HTTP client limits
         self.limits = limits or httpx.Limits(
             max_keepalive_connections=10,
             max_connections=20
         )
-        
+
         # Token usage tracking
         self.token_usage: List[TokenUsage] = []
         
@@ -174,6 +177,10 @@ class AsyncGLMClient:
             "max_tokens": self.max_tokens,
             "stream": stream
         }
+
+        # Add thinking parameter only if enabled
+        if self.enable_thinking:
+            request_data["thinking"] = True
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -182,7 +189,13 @@ class AsyncGLMClient:
         
         api_logger.logger.info(
             f"Analyzing code with {review_type.value} review type, "
-            f"estimated tokens: {estimated_tokens}"
+            f"estimated tokens: {estimated_tokens}, thinking: {self.enable_thinking}"
+        )
+
+        # Log request data for debugging (without sensitive info)
+        api_logger.logger.debug(
+            f"Request data: model={self.model}, temperature={self.temperature}, "
+            f"max_tokens={self.max_tokens}, stream={stream}, thinking={self.enable_thinking}"
         )
         
         try:
@@ -317,6 +330,8 @@ class AsyncGLMClient:
             except httpx.HTTPStatusError as e:
                 error_msg = f"HTTP error: {e.response.status_code}"
                 if e.response.text:
+                    # Log the full response for debugging
+                    api_logger.logger.error(f"API error response: {e.response.text}")
                     try:
                         error_detail = e.response.json()
                         error_msg += f" - {error_detail.get('error', {}).get('message', e.response.text)}"
@@ -331,32 +346,36 @@ class AsyncGLMClient:
     def _get_default_prompt(self) -> str:
         """
         Get the default user prompt for code analysis.
-        
+
         Returns:
             Default prompt string requesting JSON-formatted analysis
         """
-        return """Analyze this code and provide structured feedback in JSON format:
+        return """Найдите ВСЕ проблемы, баги и потенциальные улучшения в этом коде.
 
+**Обязательно проверьте**:
+- Баги и потенциальные ошибки времени выполнения
+- Уязвимости безопасности
+- Проблемы производительности
+- Плохую обработку ошибок и граничных случаев
+- Дублирование кода
+- Нарушения лучших практик
+- Сложный или неясный код
+
+**Формат ответа - ТОЛЬКО JSON**:
 {
   "comments": [
     {
-      "file": "path/to/file.py",
-      "line": 42,
-      "comment": "Consider using list comprehension here",
-      "type": "suggestion|issue|praise",
-      "severity": "low|medium|high|critical"
+      "file": "путь/к/файлу.py",
+      "line": "42",
+      "comment": "Подробное описание проблемы + объяснение последствий + решение",
+      "type": "issue",
+      "severity": "high"
     }
   ]
 }
 
-Focus on:
-- Code quality and maintainability
-- Potential bugs or issues
-- Performance considerations
-- Security best practices
-- Code style and conventions
-
-Provide specific, actionable feedback with line numbers when applicable."""
+НЕ пишите о том, что сделано хорошо. Только проблемы и улучшения.
+Каждый комментарий должен включать: ЧТО не так, ПОЧЕМУ это проблема, КАК исправить."""
     
     def _parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -481,10 +500,11 @@ class GLMClient:
         temperature: float = 0.3,
         max_tokens: int = 4000,
         timeout: int = 60,
-        limits: Optional[httpx.Limits] = None
+        limits: Optional[httpx.Limits] = None,
+        enable_thinking: bool = False
     ):
         self._async_client = AsyncGLMClient(
-            api_key, api_url, model, temperature, max_tokens, timeout, limits
+            api_key, api_url, model, temperature, max_tokens, timeout, limits, enable_thinking
         )
     
     def analyze_code(

@@ -97,7 +97,22 @@ class Settings:
     # Performance and Resource Management
     memory_limit_mb: int = field(default=512)
     timeout_seconds: int = field(default=300)
-    
+
+    # Webhook Configuration
+    webhook_secret: str = field(default_factory=lambda: os.getenv("WEBHOOK_SECRET", ""))
+    webhook_enabled: bool = field(default_factory=lambda: os.getenv("WEBHOOK_ENABLED", "true").lower() in ("true", "1", "yes", "on"))
+    webhook_skip_draft: bool = field(default_factory=lambda: os.getenv("WEBHOOK_SKIP_DRAFT", "true").lower() in ("true", "1", "yes", "on"))
+    webhook_skip_wip: bool = field(default_factory=lambda: os.getenv("WEBHOOK_SKIP_WIP", "true").lower() in ("true", "1", "yes", "on"))
+    webhook_required_labels: List[str] = field(default_factory=lambda: os.getenv("WEBHOOK_REQUIRED_LABELS", "").split(",") if os.getenv("WEBHOOK_REQUIRED_LABELS") else [])
+    webhook_excluded_labels: List[str] = field(default_factory=lambda: os.getenv("WEBHOOK_EXCLUDED_LABELS", "").split(",") if os.getenv("WEBHOOK_EXCLUDED_LABELS") else [])
+    webhook_trigger_actions: List[str] = field(default_factory=lambda: os.getenv("WEBHOOK_TRIGGER_ACTIONS", "open,update,reopen").split(",") if os.getenv("WEBHOOK_TRIGGER_ACTIONS") else ["open", "update", "reopen"])
+
+    # Deduplication Configuration
+    deduplication_strategy: str = field(default_factory=lambda: os.getenv("DEDUPLICATION_STRATEGY", "content_hash"))
+    deduplication_enabled: bool = field(default_factory=lambda: os.getenv("DEDUPLICATION_ENABLED", "true").lower() in ("true", "1", "yes", "on"))
+    commit_tracking_ttl_hours: int = field(default_factory=lambda: int(os.getenv("COMMIT_TRACKING_TTL_HOURS", "24")))
+    bot_comment_marker: str = field(default_factory=lambda: os.getenv("BOT_COMMENT_MARKER", "<!-- glm-review-bot -->"))
+
     def __post_init__(self):
         """Validate settings after initialization."""
         # Ensure required fields are present
@@ -119,7 +134,18 @@ class Settings:
         
         if self.log_level not in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
             raise ValueError("log_level must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL")
-        
+
+        # Validate webhook configuration
+        if self.webhook_enabled and not self.webhook_secret:
+            raise ValueError("WEBHOOK_SECRET is required when webhook_enabled is True")
+
+        # Validate deduplication strategy
+        if self.deduplication_strategy not in ["content_hash", "commit_sha", "mr_update"]:
+            raise ValueError("deduplication_strategy must be one of: content_hash, commit_sha, mr_update")
+
+        if self.commit_tracking_ttl_hours < 1:
+            raise ValueError("commit_tracking_ttl_hours must be at least 1")
+
         # Ensure string types for API compatibility
         self.mr_iid = str(self.mr_iid)
         self.project_id = str(self.project_id)
@@ -179,7 +205,15 @@ class Settings:
             "LOG_FORMAT": "log_format",
             "LOG_FILE": "log_file",
             "MEMORY_LIMIT_MB": "memory_limit_mb",
-            "TIMEOUT_SECONDS": "timeout_seconds"
+            "TIMEOUT_SECONDS": "timeout_seconds",
+            "WEBHOOK_SECRET": "webhook_secret",
+            "WEBHOOK_ENABLED": "webhook_enabled",
+            "WEBHOOK_SKIP_DRAFT": "webhook_skip_draft",
+            "WEBHOOK_SKIP_WIP": "webhook_skip_wip",
+            "DEDUPLICATION_STRATEGY": "deduplication_strategy",
+            "DEDUPLICATION_ENABLED": "deduplication_enabled",
+            "COMMIT_TRACKING_TTL_HOURS": "commit_tracking_ttl_hours",
+            "BOT_COMMENT_MARKER": "bot_comment_marker"
         }
         
         # Collect environment variables
@@ -189,12 +223,13 @@ class Settings:
         
         # Convert boolean and numeric strings
         for key, value in env_vars.items():
-            if key in ["enable_inline_comments", "enable_security_review", "enable_performance_review"]:
+            if key in ["enable_inline_comments", "enable_security_review", "enable_performance_review",
+                       "webhook_enabled", "webhook_skip_draft", "webhook_skip_wip", "deduplication_enabled"]:
                 env_vars[key] = value.lower() in ("true", "1", "yes", "on")
             elif key in ["glm_temperature", "api_request_delay", "retry_delay", "retry_backoff_factor"]:
                 env_vars[key] = float(value)
-            elif key in ["glm_max_tokens", "max_diff_size", "max_files_per_comment", "max_parallel_requests", 
-                         "max_retries", "memory_limit_mb", "timeout_seconds"]:
+            elif key in ["glm_max_tokens", "max_diff_size", "max_files_per_comment", "max_parallel_requests",
+                         "max_retries", "memory_limit_mb", "timeout_seconds", "commit_tracking_ttl_hours"]:
                 env_vars[key] = int(value)
         
         # Merge with provided kwargs
@@ -268,7 +303,18 @@ class SettingsProtocol(Protocol):
     log_file: Optional[str]
     ignore_file_patterns: List[str]
     prioritize_file_patterns: List[str]
-    
+    webhook_secret: str
+    webhook_enabled: bool
+    webhook_skip_draft: bool
+    webhook_skip_wip: bool
+    webhook_required_labels: List[str]
+    webhook_excluded_labels: List[str]
+    webhook_trigger_actions: List[str]
+    deduplication_strategy: str
+    deduplication_enabled: bool
+    commit_tracking_ttl_hours: int
+    bot_comment_marker: str
+
     def is_file_ignored(self, file_path: str) -> bool: ...
     def is_file_prioritized(self, file_path: str) -> bool: ...
     def get_gitlab_headers(self) -> Dict[str, str]: ...
