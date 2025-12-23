@@ -1,0 +1,262 @@
+# Docker Compose configuration for GLM Code Review Bot CLI
+version: '3.8'
+
+services:
+  # Development environment
+  review-bot-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+      target: production
+    container_name: review-bot-dev
+    ports:
+      - "8000:8000"   # Main application server
+      - "8080:8080"   # Monitoring server
+    environment:
+      # Environment
+      - LOG_LEVEL=DEBUG
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - MONITORING_PORT=8080
+      - MAX_CONCURRENT_REVIEWS=1
+      
+      # GitLab Configuration (provide your own tokens)
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_API_URL=${GITLAB_API_URL:-https://gitlab.com/api/v4}
+      - CI_PROJECT_ID=${CI_PROJECT_ID}
+      - CI_MERGE_REQUEST_IID=${CI_MERGE_REQUEST_IID}
+      
+      # GLM Configuration (provide your own API key)
+      - GLM_API_KEY=${GLM_API_KEY}
+      - GLM_API_URL=${GLM_API_URL:-https://api.z.ai/api/paas/v4/chat/completions}
+      - GLM_MODEL=glm-4
+      - GLM_TEMPERATURE=0.3
+      - GLM_MAX_TOKENS=4000
+      
+      # Performance Configuration
+      - API_REQUEST_DELAY=0.1
+      - MAX_RETRIES=1
+      - RETRY_DELAY=1.0
+      - RETRY_BACKOFF_FACTOR=2.0
+      - REVIEW_TIMEOUT_SECONDS=600
+      
+      # Logging
+      - LOG_FORMAT=text
+      - LOG_FILE=/app/logs/review-bot.log
+    
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    
+    command: ["python3", "review_bot_server.py", "start-server", "--env", "dev", "--verbose", "--reload"]
+    
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    networks:
+      - review-bot-network
+
+  # Staging environment
+  review-bot-staging:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+      target: production
+    container_name: review-bot-staging
+    ports:
+      - "9000:8000"   # Main application server (different port)
+      - "9080:8080"   # Monitoring server (different port)
+    environment:
+      # Environment
+      - LOG_LEVEL=INFO
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - MONITORING_PORT=8080
+      - MAX_CONCURRENT_REVIEWS=2
+      
+      # GitLab Configuration
+      - GITLAB_TOKEN=${STAGING_GITLAB_TOKEN}
+      - GITLAB_API_URL=${STAGING_GITLAB_API_URL:-https://gitlab.com/api/v4}
+      - CI_PROJECT_ID=${STAGING_PROJECT_ID}
+      - CI_MERGE_REQUEST_IID=${STAGING_MR_IID}
+      
+      # GLM Configuration
+      - GLM_API_KEY=${STAGING_GLM_API_KEY}
+      - GLM_API_URL=${STAGING_GLM_API_URL:-https://api.z.ai/api/paas/v4/chat/completions}
+      - GLM_MODEL=glm-4
+      - GLM_TEMPERATURE=0.3
+      - GLM_MAX_TOKENS=4000
+      
+      # Performance Configuration
+      - API_REQUEST_DELAY=0.3
+      - MAX_RETRIES=2
+      - RETRY_DELAY=1.5
+      - RETRY_BACKOFF_FACTOR=2.0
+      - REVIEW_TIMEOUT_SECONDS=450
+      
+      # Logging
+      - LOG_FORMAT=json
+      - LOG_FILE=/app/logs/review-bot.log
+    
+    volumes:
+      - ./logs/staging:/app/logs
+      - ./data/staging:/app/data
+    
+    command: ["python3", "review_bot_server.py", "start-server", "--env", "staging"]
+    
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    networks:
+      - review-bot-network
+    profiles:
+      - staging
+
+  # Production environment
+  review-bot-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+      target: production
+    container_name: review-bot-prod
+    ports:
+      - "8000:8000"   # Main application server
+      - "8080:8080"   # Monitoring server
+    environment:
+      # Environment
+      - LOG_LEVEL=INFO
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - MONITORING_PORT=8080
+      - MAX_CONCURRENT_REVIEWS=3
+      
+      # GitLab Configuration
+      - GITLAB_TOKEN=${PROD_GITLAB_TOKEN}
+      - GITLAB_API_URL=${PROD_GITLAB_API_URL:-https://gitlab.com/api/v4}
+      - CI_PROJECT_ID=${PROD_PROJECT_ID}
+      - CI_MERGE_REQUEST_IID=${PROD_MR_IID}
+      
+      # GLM Configuration
+      - GLM_API_KEY=${PROD_GLM_API_KEY}
+      - GLM_API_URL=${PROD_GLM_API_URL:-https://api.z.ai/api/paas/v4/chat/completions}
+      - GLM_MODEL=glm-4
+      - GLM_TEMPERATURE=0.3
+      - GLM_MAX_TOKENS=4000
+      
+      # Performance Configuration
+      - API_REQUEST_DELAY=0.5
+      - MAX_RETRIES=3
+      - RETRY_DELAY=2.0
+      - RETRY_BACKOFF_FACTOR=2.5
+      - REVIEW_TIMEOUT_SECONDS=300
+      
+      # Logging
+      - LOG_FORMAT=json
+      - LOG_FILE=/app/logs/review-bot.log
+    
+    volumes:
+      - ./logs/prod:/app/logs
+      - ./data/prod:/app/data
+      - ./config:/app/config:ro  # Read-only configuration
+    
+    command: ["python3", "review_bot_server.py", "start-server", "--env", "prod", "--workers", "4"]
+    
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    
+    networks:
+      - review-bot-network
+    profiles:
+      - production
+
+  # Monitoring-only mode
+  review-bot-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+      target: production
+    container_name: review-bot-monitor
+    ports:
+      - "8080:8080"   # Monitoring server only
+    environment:
+      - LOG_LEVEL=INFO
+      - SERVER_HOST=0.0.0.0
+      - MONITORING_PORT=8080
+    
+    command: ["python3", "review_bot_server.py", "monitor-mode", "--port", "8080"]
+    
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    networks:
+      - review-bot-network
+    profiles:
+      - monitor
+
+  # CLI for one-off commands
+  review-bot-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+      target: production
+    container_name: review-bot-cli
+    environment:
+      # Use same configuration as development
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_API_URL=${GITLAB_API_URL:-https://gitlab.com/api/v4}
+      - CI_PROJECT_ID=${CI_PROJECT_ID}
+      - CI_MERGE_REQUEST_IID=${CI_MERGE_REQUEST_IID}
+      - GLM_API_KEY=${GLM_API_KEY}
+      - GLM_API_URL=${GLM_API_URL:-https://api.z.ai/api/paas/v4/chat/completions}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+    
+    # Override this with specific CLI commands
+    command: ["python3", "review_bot_server.py", "--help"]
+    
+    network_mode: "host"  # Access host network for GitLab API
+    profiles:
+      - cli
+
+networks:
+  review-bot-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  logs:
+    driver: local
+  data:
+    driver: local
+
+# Example usage:
+# docker-compose up review-bot-dev                    # Start development
+# docker-compose --profile staging up review-bot-staging  # Start staging
+# docker-compose --profile production up review-bot-prod  # Start production
+# docker-compose --profile monitor up review-bot-monitor    # Start monitoring only
+# docker-compose --profile cli run --rm review-bot-cli run-bot --dry-run  # Run CLI command

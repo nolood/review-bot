@@ -7,15 +7,14 @@ code changes and generate structured feedback.
 
 import json
 import os
-import re
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 
 import httpx
 
 from src.config.prompts import get_system_prompt, ReviewType
 from src.utils.logger import api_logger
-from src.utils.exceptions import GLMAPIError, ReviewBotError
+from src.utils.exceptions import GLMAPIError
 from src.utils.retry import retry_with_backoff, RetryConfig
 
 
@@ -207,7 +206,7 @@ class GLMClient:
                     try:
                         error_detail = e.response.json()
                         error_msg += f" - {error_detail.get('error', {}).get('message', e.response.text)}"
-                    except:
+                    except Exception:
                         error_msg += f" - {e.response.text}"
                 raise GLMAPIError(error_msg) from e
             except httpx.RequestError as e:
@@ -267,11 +266,23 @@ Provide specific, actionable feedback with line numbers when applicable."""
         
         if not content:
             raise GLMAPIError("Invalid response format: missing content")
-        
+
+        # Extract JSON from markdown code block if present
+        # GLM often returns: ```json\n{...}\n```
+        if "```json" in content or "```" in content:
+            import re
+            # Try to extract JSON from markdown code block
+            json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1).strip()
+
         # Try to parse as JSON first
         try:
             parsed_content = json.loads(content)
             if isinstance(parsed_content, dict) and "comments" in parsed_content:
+                # Debug: log parsed comments count
+                api_logger.logger.info(f"Successfully parsed {len(parsed_content['comments'])} comments from GLM response")
+
                 # Ensure all comments have required fields
                 for comment in parsed_content["comments"]:
                     comment.setdefault("severity", "medium")
@@ -279,8 +290,9 @@ Provide specific, actionable feedback with line numbers when applicable."""
                     comment.setdefault("file", "unknown")
                     comment.setdefault("line", None)
                 return parsed_content
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError) as e:
             # Fall back to text parsing
+            api_logger.logger.warning(f"JSON parsing failed: {e}")
             pass
         
         # If JSON parsing fails, treat as text and create a single comment

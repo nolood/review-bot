@@ -4,7 +4,7 @@ Unit tests for GLM API client
 import json
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-import requests
+import httpx
 
 from src.glm_client import GLMClient
 from src.utils.exceptions import GLMAPIError
@@ -32,8 +32,8 @@ class TestGLMClient:
         client = GLMClient()
         assert client.api_url == "https://api.z.ai/api/paas/v4/chat/completions"
 
-    @patch('src.glm_client.requests.post')
-    def test_analyze_code_success(self, mock_post, client):
+    @patch('httpx.Client')
+    def test_analyze_code_success(self, mock_client_class, client):
         """Test successful code analysis"""
         # Mock API response
         mock_response = Mock()
@@ -62,14 +62,17 @@ class TestGLMClient:
             }
         }
         mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        
+        mock_client = Mock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__enter__.return_value = mock_client
 
         diff = "--- a/src/example.py\n+++ b/src/example.py\n@@ -42,3 +42,3 @@\n old_code\n new_code"
         result = client.analyze_code(diff)
 
         # Verify API call
-        mock_post.assert_called_once()
-        args, kwargs = mock_post.call_args
+        mock_client.post.assert_called_once()
+        args, kwargs = mock_client.post.call_args
         
         assert kwargs["json"]["model"] == "glm-4"
         assert len(kwargs["json"]["messages"]) == 2
@@ -85,8 +88,8 @@ class TestGLMClient:
         assert result["comments"][0]["line"] == 42
         assert "list comprehension" in result["comments"][0]["comment"]
 
-    @patch('src.glm_client.requests.post')
-    def test_analyze_code_with_custom_prompt(self, mock_post, client):
+    @patch('httpx.Client')
+    def test_analyze_code_with_custom_prompt(self, mock_client_class, client):
         """Test code analysis with custom prompt"""
         # Mock API response
         mock_response = Mock()
@@ -107,32 +110,38 @@ class TestGLMClient:
             ]
         }
         mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        
+        mock_client = Mock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__enter__.return_value = mock_client
 
         custom_prompt = "Focus on security vulnerabilities only"
         diff = "some diff content"
         client.analyze_code(diff, custom_prompt)
 
         # Verify API call included custom prompt
-        args, kwargs = mock_post.call_args
+        args, kwargs = mock_client.post.call_args
         user_message = kwargs["json"]["messages"][1]
         assert custom_prompt in user_message["content"]
         assert diff in user_message["content"]
 
-    @patch('src.glm_client.requests.post')
-    def test_analyze_code_api_error(self, mock_post, client):
+    @patch('httpx.Client')
+    def test_analyze_code_api_error(self, mock_client_class, client):
         """Test handling of GLM API errors"""
         mock_response = Mock()
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("API Error")
-        mock_post.return_value = mock_response
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError("API Error", request=Mock(), response=Mock())
+        
+        mock_client = Mock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__enter__.return_value = mock_client
 
         with pytest.raises(GLMAPIError) as exc_info:
             client.analyze_code("some diff")
 
         assert "Failed to analyze code" in str(exc_info.value)
 
-    @patch('src.glm_client.requests.post')
-    def test_analyze_code_malformed_response(self, mock_post, client):
+    @patch('httpx.Client')
+    def test_analyze_code_malformed_response(self, mock_client_class, client):
         """Test handling of malformed API response"""
         # Mock API response with invalid JSON in content
         mock_response = Mock()
@@ -146,7 +155,10 @@ class TestGLMClient:
             ]
         }
         mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        
+        mock_client = Mock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__enter__.return_value = mock_client
 
         result = client.analyze_code("some diff")
 
@@ -156,14 +168,17 @@ class TestGLMClient:
         assert result["comments"][0]["comment"] == "This is not valid JSON"
         assert result["comments"][0]["severity"] == "medium"
 
-    @patch('src.glm_client.requests.post')
-    def test_analyze_code_missing_choices(self, mock_post, client):
+    @patch('httpx.Client')
+    def test_analyze_code_missing_choices(self, mock_client_class, client):
         """Test handling of response missing choices"""
         # Mock API response without choices
         mock_response = Mock()
         mock_response.json.return_value = {}
         mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        
+        mock_client = Mock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__enter__.return_value = mock_client
 
         with pytest.raises(GLMAPIError) as exc_info:
             client.analyze_code("some diff")

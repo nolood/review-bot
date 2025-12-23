@@ -2,6 +2,6 @@
 Configuration module for the GLM Code Review Bot.
 """
 
-from .settings import Settings, settings
+from .settings import Settings
 
-__all__ = ["Settings", "settings"]
+__all__ = ["Settings"]

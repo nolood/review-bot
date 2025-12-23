@@ -1,0 +1,214 @@
+# Makefile for GLM Code Review Bot CLI
+# Provides convenient commands for development, testing, and deployment
+
+.PHONY: help install validate test dev prod docker-build docker-run clean cli-help
+
+# Default target
+help: ## Show this help message
+	@echo "🤖 GLM Code Review Bot CLI Commands"
+	@echo "====================================="
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# Installation and setup
+install: ## Install dependencies and setup CLI
+	@echo "📦 Installing dependencies..."
+	pip install -r requirements.txt
+	@echo "🔐 Making CLI executable..."
+	chmod +x review_bot_server.py validate_cli.py
+	@echo "✅ Installation complete!"
+
+validate: ## Validate CLI structure and configuration
+	@echo "🔍 Validating CLI structure..."
+	python3 validate_cli.py
+	@echo ""
+	@echo "⚙️ Validating configuration..."
+	python3 review_bot_server.py validate-config --verbose
+
+# Development commands
+dev: ## Start development server with monitoring
+	@echo "🚀 Starting development server..."
+	python3 review_bot_server.py start-server --env dev --verbose --reload
+
+dev-simple: ## Start development server without monitoring
+	@echo "🚀 Starting development server (no monitoring)..."
+	python3 review_bot_server.py start-server --env dev --verbose --no-monitoring --reload
+
+# Testing commands
+test-health: ## Run health check
+	@echo "🏥 Running health check..."
+	python3 review_bot_server.py health-check --verbose
+
+test-bot: ## Run bot in dry-run mode
+	@echo "🤖 Running bot in dry-run mode..."
+	python3 review_bot_server.py run-bot --dry-run --verbose --review-type general
+
+test-security: ## Run security review in dry-run mode
+	@echo "🔒 Running security review in dry-run mode..."
+	python3 review_bot_server.py run-bot --dry-run --verbose --review-type security
+
+test-performance: ## Run performance review in dry-run mode
+	@echo "⚡ Running performance review in dry-run mode..."
+	python3 review_bot_server.py run-bot --dry-run --verbose --review-type performance
+
+monitor: ## Start monitoring server only
+	@echo "📊 Starting monitoring server..."
+	python3 review_bot_server.py monitor-mode --verbose
+
+# Production commands
+prod: ## Start production server
+	@echo "🏭 Starting production server..."
+	python3 review_bot_server.py start-server --env prod --workers 4
+
+staging: ## Start staging server
+	@echo "🎭 Starting staging server..."
+	python3 review_bot_server.py start-server --env staging --workers 2
+
+# Docker commands
+docker-build: ## Build Docker image
+	@echo "🐳 Building Docker image..."
+	docker build -f Dockerfile.cli -t review-bot-cli:latest .
+
+docker-run-dev: ## Run Docker container in development mode
+	@echo "🐳 Starting Docker container (development)..."
+	docker-compose -f docker-compose.cli.yml up review-bot-dev
+
+docker-run-staging: ## Run Docker container in staging mode
+	@echo "🐳 Starting Docker container (staging)..."
+	docker-compose -f docker-compose.cli.yml --profile staging up review-bot-staging
+
+docker-run-prod: ## Run Docker container in production mode
+	@echo "🐳 Starting Docker container (production)..."
+	docker-compose -f docker-compose.cli.yml --profile production up review-bot-prod
+
+docker-monitor: ## Run monitoring-only Docker container
+	@echo "🐳 Starting Docker monitoring container..."
+	docker-compose -f docker-compose.cli.yml --profile monitor up review-bot-monitor
+
+docker-cli: ## Run CLI in Docker container
+	@echo "🐳 Running CLI command in Docker..."
+	@if [ -z "$(CMD)" ]; then \
+		docker-compose -f docker-compose.cli.yml --profile cli run --rm review-bot-cli --help; \
+	else \
+		docker-compose -f docker-compose.cli.yml --profile cli run --rm review-bot-cli $(CMD); \
+	fi
+
+# Environment setup
+env-dev: ## Setup development environment variables
+	@echo "📝 Setting up development environment..."
+	@echo "# Development Environment Variables" > .env.dev
+	@echo "LOG_LEVEL=DEBUG" >> .env.dev
+	@echo "SERVER_HOST=0.0.0.0" >> .env.dev
+	@echo "SERVER_PORT=8000" >> .env.dev
+	@echo "MONITORING_PORT=8080" >> .env.dev
+	@echo "MAX_CONCURRENT_REVIEWS=1" >> .env.dev
+	@echo "API_REQUEST_DELAY=0.1" >> .env.dev
+	@echo "REVIEW_TIMEOUT_SECONDS=600" >> .env.dev
+	@echo "LOG_FORMAT=text" >> .env.dev
+	@echo "✅ .env.dev created. Please add your API tokens."
+
+env-staging: ## Setup staging environment variables
+	@echo "📝 Setting up staging environment..."
+	@echo "# Staging Environment Variables" > .env.staging
+	@echo "LOG_LEVEL=INFO" >> .env.staging
+	@echo "SERVER_HOST=0.0.0.0" >> .env.staging
+	@echo "SERVER_PORT=8000" >> .env.staging
+	@echo "MONITORING_PORT=8080" >> .env.staging
+	@echo "MAX_CONCURRENT_REVIEWS=2" >> .env.staging
+	@echo "API_REQUEST_DELAY=0.3" >> .env.staging
+	@echo "REVIEW_TIMEOUT_SECONDS=450" >> .env.staging
+	@echo "LOG_FORMAT=json" >> .env.staging
+	@echo "✅ .env.staging created. Please add your API tokens."
+
+env-prod: ## Setup production environment variables
+	@echo "📝 Setting up production environment..."
+	@echo "# Production Environment Variables" > .env.prod
+	@echo "LOG_LEVEL=INFO" >> .env.prod
+	@echo "SERVER_HOST=0.0.0.0" >> .env.prod
+	@echo "SERVER_PORT=8000" >> .env.prod
+	@echo "MONITORING_PORT=8080" >> .env.prod
+	@echo "MAX_CONCURRENT_REVIEWS=3" >> .env.prod
+	@echo "API_REQUEST_DELAY=0.5" >> .env.prod
+	@echo "REVIEW_TIMEOUT_SECONDS=300" >> .env.prod
+	@echo "LOG_FORMAT=json" >> .env.prod
+	@echo "✅ .env.prod created. Please add your API tokens."
+
+# Utility commands
+version: ## Show CLI version
+	@echo "📋 Version Information:"
+	python3 review_bot_server.py version
+
+status: ## Show system status
+	@echo "📊 System Status:"
+	@echo "Python version: $(python3 --version)"
+	@echo "Current directory: $(pwd)"
+	@echo "CLI file size: $(wc -l < review_bot_server.py) lines"
+	@echo "Dependencies installed: $(pip list | grep -E '(typer|rich|fastapi)' | wc -l)"
+
+clean: ## Clean up temporary files and containers
+	@echo "🧹 Cleaning up..."
+	find . -name "*.pyc" -delete
+	find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+	find . -name ".pytest_cache" -type d -exec rm -rf {} + 2>/dev/null || true
+	docker-compose -f docker-compose.cli.yml down --remove-orphans 2>/dev/null || true
+	docker system prune -f
+	@echo "✅ Cleanup complete!"
+
+# CLI help
+cli-help: ## Show detailed CLI help
+	@echo "📖 GLM Code Review Bot CLI Help"
+	@echo "================================="
+	python3 review_bot_server.py --help
+
+# Quick start commands
+quick-start: ## Quick start with minimal setup
+	@echo "🚀 Quick Start Setup"
+	@echo "==================="
+	@echo "1. Installing dependencies..."
+	$(MAKE) install
+	@echo ""
+	@echo "2. Setting up development environment..."
+	$(MAKE) env-dev
+	@echo ""
+	@echo "3. Starting development server..."
+	$(MAKE) dev
+
+demo: ## Run demo with mock data
+	@echo "🎬 Running demo..."
+	@echo "This will start the CLI validation and show structure."
+	@echo "Press Ctrl+C to stop the demo."
+	@sleep 2
+	python3 validate_cli.py
+
+# Examples
+examples: ## Show usage examples
+	@echo "📚 Usage Examples"
+	@echo "=================="
+	@echo ""
+	@echo "Development:"
+	@echo "  make dev                    # Start development server"
+	@echo "  make test-bot               # Run bot in dry-run mode"
+	@echo "  make monitor                # Start monitoring only"
+	@echo ""
+	@echo "Production:"
+	@echo "  make prod                   # Start production server"
+	@echo "  make docker-run-prod        # Run in Docker (production)"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test-health            # Run health check"
+	@echo "  make test-security          # Run security review"
+	@echo "  make validate               # Validate configuration"
+	@echo ""
+	@echo "Docker:"
+	@echo "  make docker-build            # Build Docker image"
+	@echo "  make docker-monitor          # Run monitoring container"
+	@echo "  CMD='run-bot --dry-run' make docker-cli  # Run CLI command in Docker"
+	@echo ""
+	@echo "Environment Setup:"
+	@echo "  make env-dev               # Create .env.dev file"
+	@echo "  make env-prod              # Create .env.prod file"
+	@echo ""
+	@echo "Utilities:"
+	@echo "  make clean                  # Clean up files"
+	@echo "  make version                # Show version"
+	@echo "  make status                 # Show system status"

@@ -12,10 +12,23 @@ from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 
-from .gitlab_client import GitLabClient
-from .config.settings import settings
-from .utils.logger import get_logger
-from .utils.exceptions import CommentPublishError
+try:
+    from .gitlab_client import GitLabClient
+    from .config.settings import settings
+    from .utils.logger import get_logger
+    from .utils.exceptions import CommentPublishError
+    from .line_code_mapper import LinePositionValidator
+except ImportError:
+    # Fallback for direct imports
+    from gitlab_client import GitLabClient
+    try:
+        from config.settings import settings
+    except ImportError:
+        settings = None
+    from utils.logger import get_logger
+    from utils.exceptions import CommentPublishError
+    from line_code_mapper import LinePositionValidator
+
 
 
 class CommentType(Enum):
@@ -80,21 +93,27 @@ class CommentPublisher:
         CommentType.SUMMARY: "📋"
     }
     
-    def __init__(self, gitlab_client: Optional[GitLabClient] = None):
+    def __init__(
+        self,
+        gitlab_client: Optional[GitLabClient] = None,
+        line_position_validator: Optional[LinePositionValidator] = None
+    ):
         """
         Initialize the comment publisher.
-        
+
         Args:
             gitlab_client: Optional pre-initialized GitLab client
+            line_position_validator: Optional line position validator for validating inline comment positions
         """
         self.logger = get_logger("comment_publisher")
         self.gitlab_client = gitlab_client or GitLabClient()
-        
+        self.line_position_validator = line_position_validator
+
         # Rate limiting configuration
         self.last_comment_time = 0.0
-        self.comment_delay = settings.api_request_delay
+        self.comment_delay = getattr(settings, 'api_request_delay', 0.5) if settings else 0.5
         self.max_batch_size = 10
-        
+
         self.logger.info("Comment publisher initialized")
     
     def format_comments(self, glm_response: Union[str, Dict[str, Any]]) -> CommentBatch:
@@ -218,14 +237,48 @@ class CommentPublisher:
                     
                     # Publish the comment
                     if comment.line_number and mr_details:
-                        # Inline comment
-                        response = self._publish_inline_comment(
-                            comment, mr_details, formatted_comment
-                        )
+                        # Inline comment - try with fallback
+                        try:
+                            response = self._publish_inline_comment(
+                                comment, mr_details, formatted_comment
+                            )
+                        except Exception as e:
+                            # Check if this is a line_code/position error from GitLab
+                            error_msg = str(e).lower()
+
+                            # Check the exception and its cause chain for line_code errors
+                            is_line_code_error = False
+                            current_exception = e
+                            while current_exception:
+                                current_msg = str(current_exception).lower()
+                                if ("line_code" in current_msg or "can't be blank" in current_msg or
+                                    "must be a valid line code" in current_msg or
+                                    ("bad request" in current_msg and "note" in current_msg)):
+                                    is_line_code_error = True
+                                    break
+                                # Check __cause__ and __context__ for chained exceptions
+                                current_exception = getattr(current_exception, '__cause__', None) or getattr(current_exception, '__context__', None)
+
+                            if is_line_code_error:
+                                self.logger.warning(
+                                    f"GitLab rejected inline comment for {comment.file_path}:{comment.line_number}, "
+                                    f"posting as general comment instead",
+                                    extra={
+                                        "file_path": comment.file_path,
+                                        "line_number": comment.line_number,
+                                        "error": str(e)
+                                    }
+                                )
+                                # Post as general comment instead
+                                fallback_comment = f"{formatted_comment}\n\n---\n*Note: This comment was intended for `{comment.file_path}:{comment.line_number}`, but GitLab rejected the inline position.*"
+                                response = self.gitlab_client.post_comment(fallback_comment)
+                            else:
+                                # Re-raise if it's a different error
+                                raise
                     else:
                         # General file comment
                         response = self.gitlab_client.post_comment(formatted_comment)
-                    
+
                     responses.append(response)
             
             self.logger.info(
@@ -314,11 +367,19 @@ class CommentPublisher:
         # Extract file and line information
         file_path = comment_data.get("file", comment_data.get("path"))
         line_number = comment_data.get("line", comment_data.get("line_number"))
+
+        # Parse line number (handle both single numbers and ranges like "37-49")
         if isinstance(line_number, str):
             try:
-                line_number = int(line_number)
+                # If it's a range (e.g., "37-49"), extract the first line number
+                if '-' in line_number:
+                    line_number = int(line_number.split('-')[0].strip())
+                else:
+                    line_number = int(line_number)
             except ValueError:
                 line_number = None
+        elif isinstance(line_number, (int, float)):
+            line_number = int(line_number)
         
         return FormattedComment(
             comment_type=comment_type,
@@ -371,10 +432,14 @@ class CommentPublisher:
         """
         severity_emoji = self.SEVERITY_EMOJIS.get(comment.severity, "")
         type_emoji = self.COMMENT_TYPE_EMOJIS.get(comment.comment_type, "")
-        
+
         # Build comment header
-        header = f"{severity_emoji} {type_emoji} **{comment.title}**"
-        
+        if comment.title:
+            header = f"{severity_emoji} {type_emoji} **{comment.title}**"
+        else:
+            # If no title, use emojis only
+            header = f"{severity_emoji} {type_emoji}"
+
         # Build comment body
         body_parts = [comment.body]
         
@@ -429,31 +494,96 @@ class CommentPublisher:
     ) -> Dict[str, Any]:
         """
         Publish an inline comment to a specific line.
-        
+
         Args:
             comment: Formatted comment data
             mr_details: MR details with SHA information
             formatted_comment: Formatted comment text
-            
+
         Returns:
             GitLab API response
         """
+        self.logger.debug(
+            f"Publishing inline comment for {comment.file_path}:{comment.line_number}, "
+            f"validator={'present' if self.line_position_validator else 'MISSING'}"
+        )
+
+        # Initialize line position info
+        line_info = None
+        old_line = None
+        line_code = None
+
+        # Validate line position if validator is available
+        if self.line_position_validator:
+            self.logger.debug(
+                f"Validating line position for {comment.file_path}:{comment.line_number}"
+            )
+            is_valid = self.line_position_validator.is_valid_position(
+                comment.file_path,
+                comment.line_number
+            )
+
+            if not is_valid:
+                # Line is not in diff hunks, post as regular comment
+                self.logger.warning(
+                    f"Line {comment.line_number} is not in diff hunks for {comment.file_path}, "
+                    f"posting as general comment instead",
+                    extra={
+                        "file_path": comment.file_path,
+                        "line_number": comment.line_number
+                    }
+                )
+
+                # Add file/line reference to comment
+                fallback_comment = f"{formatted_comment}\n\n---\n*Note: This comment was intended for `{comment.file_path}:{comment.line_number}`, but that line is not part of the diff.*"
+                return self.gitlab_client.post_comment(fallback_comment)
+
+            # Get detailed line info including old_line and line_code
+            line_info = self.line_position_validator.get_line_info(
+                comment.file_path,
+                comment.line_number
+            )
+
+            if line_info:
+                old_line = line_info.old_line
+                line_code = line_info.line_code
+                self.logger.debug(
+                    f"Retrieved line info for {comment.file_path}:{comment.line_number}",
+                    extra={
+                        "old_line": old_line,
+                        "line_code": line_code,
+                        "line_type": line_info.line_type
+                    }
+                )
+
         # Extract SHA information from MR details
         base_sha = mr_details.get("diff_refs", {}).get("base_sha")
         start_sha = mr_details.get("diff_refs", {}).get("start_sha")
         head_sha = mr_details.get("diff_refs", {}).get("head_sha")
-        
+
         if not all([base_sha, start_sha, head_sha]):
             # Fallback to regular comment if SHAs are not available
-            return self.gitlab_client.post_comment(formatted_comment)
-        
+            self.logger.warning(
+                "Missing SHA information, posting as general comment",
+                extra={
+                    "has_base_sha": base_sha is not None,
+                    "has_start_sha": start_sha is not None,
+                    "has_head_sha": head_sha is not None
+                }
+            )
+            fallback_comment = f"{formatted_comment}\n\n---\n*Note: This comment was intended for `{comment.file_path}:{comment.line_number}`*"
+            return self.gitlab_client.post_comment(fallback_comment)
+
+        # Post inline comment with old_line and line_code
         return self.gitlab_client.post_inline_comment(
             body=formatted_comment,
             file_path=comment.file_path,
             line_number=comment.line_number,
             base_sha=base_sha,
             start_sha=start_sha,
-            head_sha=head_sha
+            head_sha=head_sha,
+            old_line=old_line,
+            line_code=line_code
         )
     
     def _apply_rate_limit(self):

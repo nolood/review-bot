@@ -1,0 +1,476 @@
+# Prometheus Alerting Rules
+# Review Bot Monitoring Rules
+
+groups:
+  # Review Bot Application Rules
+  - name: review-bot.rules
+    rules:
+      # Alert if review bot is down
+      - alert: ReviewBotDown
+        expr: up{job="review-bot"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: review-bot
+          component: application
+        annotations:
+          summary: "Review Bot is down"
+          description: "Review Bot has been down for more than 2 minutes on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/review-bot-down"
+          troubleshooting: "Check container logs with: docker logs review-bot"
+
+      # High error rate alert (>5% error rate)
+      - alert: ReviewBotHighErrorRate
+        expr: |
+          (
+            rate(review_bot_errors_total[5m]) / 
+            (rate(review_bot_requests_total[5m]) + 0.001)
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          service: review-bot
+          component: application
+        annotations:
+          summary: "Review Bot high error rate"
+          description: "Review Bot error rate is {{ $value | humanizePercentage }} (>5%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/high-error-rate"
+          troubleshooting: "Check application logs for recent errors and API connectivity"
+
+      # Critical error rate alert (>20% error rate)
+      - alert: ReviewBotCriticalErrorRate
+        expr: |
+          (
+            rate(review_bot_errors_total[5m]) / 
+            (rate(review_bot_requests_total[5m]) + 0.001)
+          ) > 0.20
+        for: 1m
+        labels:
+          severity: critical
+          service: review-bot
+          component: application
+        annotations:
+          summary: "Review Bot critical error rate"
+          description: "Review Bot error rate is {{ $value | humanizePercentage }} (>20%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-error-rate"
+          troubleshooting: "Immediate investigation required - service may be failing"
+
+      # Slow GLM API response times (>2 seconds)
+      - alert: ReviewBotSlowGLMAPI
+        expr: histogram_quantile(0.95, rate(review_bot_glm_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: review-bot
+          component: glm-api
+        annotations:
+          summary: "Slow GLM API response times"
+          description: "95th percentile GLM API response time is {{ $value }}s (>2s) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/slow-glm-api"
+          troubleshooting: "Check GLM API status and network connectivity"
+
+      # Critical slow GLM API response times (>5 seconds)
+      - alert: ReviewBotCriticalSlowGLMAPI
+        expr: histogram_quantile(0.95, rate(review_bot_glm_request_duration_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: review-bot
+          component: glm-api
+        annotations:
+          summary: "Critical slow GLM API response times"
+          description: "95th percentile GLM API response time is {{ $value }}s (>5s) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-slow-glm-api"
+          troubleshooting: "GLM API may be experiencing issues - check service status"
+
+      # Slow GitLab API response times (>1 second)
+      - alert: ReviewBotSlowGitLabAPI
+        expr: histogram_quantile(0.95, rate(review_bot_gitlab_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: review-bot
+          component: gitlab-api
+        annotations:
+          summary: "Slow GitLab API response times"
+          description: "95th percentile GitLab API response time is {{ $value }}s (>1s) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/slow-gitlab-api"
+          troubleshooting: "Check GitLab API rate limits and network connectivity"
+
+      # Critical slow GitLab API response times (>3 seconds)
+      - alert: ReviewBotCriticalSlowGitLabAPI
+        expr: histogram_quantile(0.95, rate(review_bot_gitlab_request_duration_seconds_bucket[5m])) > 3
+        for: 2m
+        labels:
+          severity: critical
+          service: review-bot
+          component: gitlab-api
+        annotations:
+          summary: "Critical slow GitLab API response times"
+          description: "95th percentile GitLab API response time is {{ $value }}s (>3s) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-slow-gitlab-api"
+          troubleshooting: "GitLab API may be experiencing issues - check service status"
+
+      # High memory usage (>85%)
+      - alert: ReviewBotHighMemoryUsage
+        expr: |
+          (
+            container_memory_usage_bytes{name="review-bot"} / 
+            container_spec_memory_limit_bytes{name="review-bot"}
+          ) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          service: review-bot
+          component: resources
+        annotations:
+          summary: "Review Bot high memory usage"
+          description: "Review Bot memory usage is {{ $value | humanizePercentage }} (>85%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/high-memory-usage"
+          troubleshooting: "Monitor for memory leaks and consider scaling resources"
+
+      # Critical memory usage (>95%)
+      - alert: ReviewBotCriticalMemoryUsage
+        expr: |
+          (
+            container_memory_usage_bytes{name="review-bot"} / 
+            container_spec_memory_limit_bytes{name="review-bot"}
+          ) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: review-bot
+          component: resources
+        annotations:
+          summary: "Review Bot critical memory usage"
+          description: "Review Bot memory usage is {{ $value | humanizePercentage }} (>95%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-memory-usage"
+          troubleshooting: "Immediate action required - restart service or scale resources"
+
+      # High CPU usage (>80%)
+      - alert: ReviewBotHighCPUUsage
+        expr: rate(container_cpu_usage_seconds_total{name="review-bot"}[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: review-bot
+          component: resources
+        annotations:
+          summary: "Review Bot high CPU usage"
+          description: "Review Bot CPU usage is {{ $value | humanizePercentage }} (>80%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/high-cpu-usage"
+          troubleshooting: "Check for CPU-intensive operations and optimize code"
+
+      # Critical CPU usage (>95%)
+      - alert: ReviewBotCriticalCPUUsage
+        expr: rate(container_cpu_usage_seconds_total{name="review-bot"}[5m]) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: review-bot
+          component: resources
+        annotations:
+          summary: "Review Bot critical CPU usage"
+          description: "Review Bot CPU usage is {{ $value | humanizePercentage }} (>95%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-cpu-usage"
+          troubleshooting: "Service may be unresponsive - restart or scale immediately"
+
+      # Token usage alert (approaching daily limits)
+      - alert: ReviewBotHighTokenUsage
+        expr: |
+          (
+            increase(review_bot_glm_tokens_used_total[24h]) / 
+            review_bot_glm_daily_token_limit
+          ) > 0.8
+        for: 0m
+        labels:
+          severity: warning
+          service: review-bot
+          component: tokens
+        annotations:
+          summary: "Review Bot high token usage"
+          description: "Review Bot has used {{ $value | humanizePercentage }} of daily token limit"
+          runbook_url: "https://docs.example.com/runbooks/high-token-usage"
+          troubleshooting: "Monitor token usage and consider usage limits or quotas"
+
+      # Critical token usage alert (exceeding daily limits)
+      - alert: ReviewBotCriticalTokenUsage
+        expr: |
+          (
+            increase(review_bot_glm_tokens_used_total[24h]) / 
+            review_bot_glm_daily_token_limit
+          ) > 0.95
+        for: 0m
+        labels:
+          severity: critical
+          service: review-bot
+          component: tokens
+        annotations:
+          summary: "Review Bot critical token usage"
+          description: "Review Bot has used {{ $value | humanizePercentage }} of daily token limit"
+          runbook_url: "https://docs.example.com/runbooks/critical-token-usage"
+          troubleshooting: "Token limit nearly exhausted - service may stop working"
+
+      # GitLab API rate limit approaching
+      - alert: ReviewBotGitLabRateLimitWarning
+        expr: review_bot_gitlab_rate_limit_remaining < 100
+        for: 0m
+        labels:
+          severity: warning
+          service: review-bot
+          component: gitlab-api
+        annotations:
+          summary: "GitLab API rate limit low"
+          description: "GitLab API rate limit remaining: {{ $value }}"
+          runbook_url: "https://docs.example.com/runbooks/gitlab-rate-limit"
+          troubleshooting: "Reduce API request frequency or implement backoff"
+
+      # GitLab API rate limit exceeded
+      - alert: ReviewBotGitLabRateLimitExceeded
+        expr: increase(review_bot_gitlab_rate_limit_exceeded_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: review-bot
+          component: gitlab-api
+        annotations:
+          summary: "GitLab API rate limit exceeded"
+          description: "GitLab API rate limit has been exceeded on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/gitlab-rate-limit-exceeded"
+          troubleshooting: "Immediate action required - implement exponential backoff"
+
+  # System Resource Rules
+  - name: system.rules
+    rules:
+      # High disk usage
+      - alert: HighDiskUsage
+        expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+          component: disk
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage is {{ $value | humanizePercentage }} (>85%) on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+          runbook_url: "https://docs.example.com/runbooks/high-disk-usage"
+          troubleshooting: "Clean up logs and temporary files, consider disk expansion"
+
+      # Critical disk usage
+      - alert: CriticalDiskUsage
+        expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes > 0.95
+        for: 1m
+        labels:
+          severity: critical
+          service: system
+          component: disk
+        annotations:
+          summary: "Critical disk usage"
+          description: "Disk usage is {{ $value | humanizePercentage }} (>95%) on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-disk-usage"
+          troubleshooting: "Immediate cleanup required - system may become unresponsive"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+          component: memory
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }} (>85%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/high-memory-usage"
+          troubleshooting: "Check for memory leaks and optimize applications"
+
+      # Critical memory usage
+      - alert: CriticalMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: system
+          component: memory
+        annotations:
+          summary: "Critical memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }} (>95%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-memory-usage"
+          troubleshooting: "System may start swapping heavily - restart services or add memory"
+
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+          component: cpu
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value }}% (>80%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/high-cpu-usage"
+          troubleshooting: "Identify CPU-intensive processes and optimize"
+
+      # Critical CPU usage
+      - alert: CriticalCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 2m
+        labels:
+          severity: critical
+          service: system
+          component: cpu
+        annotations:
+          summary: "Critical CPU usage"
+          description: "CPU usage is {{ $value }}% (>95%) on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/critical-cpu-usage"
+          troubleshooting: "System may be unresponsive - immediate investigation required"
+
+  # Container Rules
+  - name: container.rules
+    rules:
+      # Container down
+      - alert: ContainerDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: container
+          component: runtime
+        annotations:
+          summary: "Container is down"
+          description: "Container {{ $labels.job }} on {{ $labels.instance }} has been down for more than 2 minutes"
+          runbook_url: "https://docs.example.com/runbooks/container-down"
+          troubleshooting: "Check container logs: docker logs {{ $labels.job }}"
+
+      # Container restarting frequently
+      - alert: ContainerRestarting
+        expr: increase(container_start_time_seconds[1h]) > 3
+        for: 0m
+        labels:
+          severity: warning
+          service: container
+          component: runtime
+        annotations:
+          summary: "Container restarting frequently"
+          description: "Container {{ $labels.name }} on {{ $labels.instance }} has restarted {{ $value }} times in the last hour"
+          runbook_url: "https://docs.example.com/runbooks/container-restarting"
+          troubleshooting: "Check for memory issues, configuration problems, or health check failures"
+
+      # Container OOM killed
+      - alert: ContainerOOMKilled
+        expr: increase(container_oom_events_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: container
+          component: runtime
+        annotations:
+          summary: "Container OOM killed"
+          description: "Container {{ $labels.name }} on {{ $labels.instance }} was OOM killed"
+          runbook_url: "https://docs.example.com/runbooks/container-oom"
+          troubleshooting: "Increase memory limits or optimize memory usage"
+
+  # Monitoring Stack Rules
+  - name: monitoring.rules
+    rules:
+      # Prometheus down
+      - alert: PrometheusDown
+        expr: up{job="prometheus"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: monitoring
+          component: prometheus
+        annotations:
+          summary: "Prometheus is down"
+          description: "Prometheus has been down for more than 2 minutes"
+          runbook_url: "https://docs.example.com/runbooks/prometheus-down"
+          troubleshooting: "Check Prometheus container: docker logs prometheus"
+
+      # Prometheus configuration reload failed
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 0m
+        labels:
+          severity: critical
+          service: monitoring
+          component: prometheus
+        annotations:
+          summary: "Prometheus configuration reload failed"
+          description: "Prometheus configuration reload failed on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/prometheus-config-reload-failed"
+          troubleshooting: "Check Prometheus logs for configuration errors"
+
+      # Grafana down
+      - alert: GrafanaDown
+        expr: up{job="grafana"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: monitoring
+          component: grafana
+        annotations:
+          summary: "Grafana is down"
+          description: "Grafana has been down for more than 2 minutes"
+          runbook_url: "https://docs.example.com/runbooks/grafana-down"
+          troubleshooting: "Check Grafana container: docker logs grafana"
+
+      # AlertManager down
+      - alert: AlertManagerDown
+        expr: up{job="alertmanager"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: monitoring
+          component: alertmanager
+        annotations:
+          summary: "AlertManager is down"
+          description: "AlertManager has been down for more than 2 minutes"
+          runbook_url: "https://docs.example.com/runbooks/alertmanager-down"
+          troubleshooting: "Check AlertManager container: docker logs alertmanager"
+
+      # AlertManager configuration reload failed
+      - alert: AlertManagerConfigReloadFailed
+        expr: alertmanager_config_last_reload_successful == 0
+        for: 0m
+        labels:
+          severity: warning
+          service: monitoring
+          component: alertmanager
+        annotations:
+          summary: "AlertManager configuration reload failed"
+          description: "AlertManager configuration reload failed on {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/alertmanager-config-reload-failed"
+          troubleshooting: "Check AlertManager logs for configuration errors"
+
+  # Network Rules
+  - name: network.rules
+    rules:
+      # High network latency
+      - alert: HighNetworkLatency
+        expr: probe_duration_seconds > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: network
+          component: connectivity
+        annotations:
+          summary: "High network latency"
+          description: "Network latency to {{ $labels.instance }} is {{ $value }}s (>0.5s)"
+          runbook_url: "https://docs.example.com/runbooks/high-network-latency"
+          troubleshooting: "Check network connectivity and routing"
+
+      # Network connectivity issues
+      - alert: NetworkConnectivityIssue
+        expr: probe_success == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: network
+          component: connectivity
+        annotations:
+          summary: "Network connectivity issue"
+          description: "Cannot reach {{ $labels.instance }}"
+          runbook_url: "https://docs.example.com/runbooks/network-connectivity"
+          troubleshooting: "Check network configuration and firewall rules"

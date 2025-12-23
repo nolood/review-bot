@@ -19,6 +19,7 @@ An automated code review bot that integrates with GitLab CI/CD to provide intell
 - GitLab project with CI/CD enabled
 - GitLab Personal Access Token with `api` scope
 - GLM API key from [Z.ai](https://z.ai/)
+- Docker and Docker Compose (for monitoring)
 
 ### 2. Setup
 
@@ -31,7 +32,14 @@ An automated code review bot that integrates with GitLab CI/CD to provide intell
    | `GITLAB_TOKEN` | GitLab Personal Access Token | Yes | Yes |
    | `GITLAB_API_URL` | GitLab API URL | No | No |
 
-3. Add the following to your `.gitlab-ci.yml`:
+3. Set up monitoring environment variables:
+
+   ```bash
+   cp .env.example .env
+   # Edit .env with your monitoring configuration
+   ```
+
+4. Add the following to your `.gitlab-ci.yml`:
 
 ```yaml
 stages:
@@ -55,6 +63,28 @@ code_review:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 ```
+
+5. Start the monitoring stack:
+
+```bash
+# Development environment
+docker-compose up -d
+
+# Production environment
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+### 3. Monitoring Setup
+
+The monitoring stack includes:
+
+- **Prometheus**: http://localhost:9090 - Metrics collection
+- **Grafana**: http://localhost:3000 - Data visualization
+- **AlertManager**: http://localhost:9093 - Alerting
+- **Node Exporter**: http://localhost:9100 - System metrics
+- **cAdvisor**: http://localhost:8080 - Container metrics
+
+See [MONITORING_STACK.md](MONITORING_STACK.md) for detailed setup instructions.
 
 ### 3. Configuration
 
@@ -88,10 +118,30 @@ Optional configuration via CI/CD variables:
 
 ## Documentation
 
+### User Guides
+- [Installation Guide](docs/installation.md) - How to install and set up bot
+- [Configuration Guide](docs/configuration.md) - How to configure bot for your project
+- [Deployment Guide](docs/deployment.md) - Comprehensive production deployment instructions
+- [Maintenance Procedures](docs/maintenance.md) - Ongoing maintenance and operational procedures
+- [Usage Examples](docs/usage.md) - Examples of how to use bot effectively
+- [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
+- [Monitoring Stack](MONITORING_STACK.md) - Complete monitoring and alerting setup
+
+### Developer Documentation
 - [Development Plan](docs/development_plan.md) - Detailed implementation roadmap
 - [Integration Guide](docs/integration_plan.md) - Step-by-step integration instructions
 - [Technical Specification](docs/technical_implementation.md) - In-depth technical details
+- [API Documentation](docs/api.md) - Details about GitLab and GLM API integrations
+- [Testing Infrastructure](docs/testing_infrastructure.md) - Test suite and CI/CD pipeline documentation
+- [Contributing Guidelines](docs/contributing.md) - How to contribute to the project
+
+### Project Documentation
 - [Project Specification](docs/spec.md) - Original project requirements (Russian)
+- [Implementation Summary](docs/implementation_summary.md) - Overview of what was built
+- [Critical Fixes](docs/features/critical-fixes.md) - Comprehensive fixes and improvements
+- [Changelog](docs/changelog.md) - Version history and changes
+- [Roadmap](docs/roadmap.md) - Future development plans
+- [Security Considerations](docs/security.md) - Security implications and best practices
 
 ## Example Output
 
@@ -115,13 +165,23 @@ The bot generates structured comments like this:
 ```
 /
 ├── .gitlab-ci.yml          # CI/CD pipeline configuration
+├── docker-compose.yml       # Development Docker Compose with monitoring
+├── docker-compose.prod.yml   # Production Docker Compose with monitoring
+├── Dockerfile             # Application container with monitoring deps
 ├── requirements.txt        # Python dependencies
 ├── review_bot.py          # Main bot script
+├── test_monitoring_stack.sh # Monitoring stack validation script
 ├── src/
 │   ├── gitlab_client.py   # GitLab API client
 │   ├── glm_client.py      # GLM API client
 │   ├── diff_parser.py     # Diff processing
 │   └── comment_publisher.py # Comment formatting
+├── monitoring/            # Monitoring configuration
+│   ├── prometheus.yml     # Prometheus configuration
+│   ├── alertmanager.yml   # AlertManager configuration
+│   ├── rules/            # Prometheus alert rules
+│   ├── grafana/          # Grafana dashboards and datasources
+│   └── alertmanager_templates/ # Email templates
 ├── tests/                 # Test suite
 ├── config/                # Configuration files
 └── docs/                  # Documentation
@@ -186,6 +246,31 @@ Enable debug logging by setting `LOG_LEVEL=debug` in your CI/CD variables:
 ```yaml
 variables:
   LOG_LEVEL: "debug"
+```
+
+### Monitoring Commands
+
+```bash
+# Test monitoring configuration
+./test_monitoring_stack.sh
+
+# View monitoring stack logs
+docker-compose logs -f prometheus
+docker-compose logs -f grafana
+docker-compose logs -f alertmanager
+
+# Scale review bot with monitoring
+docker-compose up -d --scale review-bot=3
+
+# Access monitoring dashboards
+open http://localhost:9090  # Prometheus
+open http://localhost:3000  # Grafana (admin/your_password)
+open http://localhost:9093  # AlertManager
+
+# View metrics
+curl http://localhost:8000/metrics  # Review Bot metrics
+curl http://localhost:9100/metrics  # System metrics
+curl http://localhost:8080/metrics  # Container metrics
 ```
 
 ## Contributing

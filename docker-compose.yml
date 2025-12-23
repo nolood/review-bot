@@ -1,0 +1,284 @@
+version: '3.8'
+
+services:
+  review-bot:
+    image: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}
+    container_name: review-bot
+    restart: unless-stopped
+    environment:
+      # GLM API Configuration
+      - GLM_API_KEY=${GLM_API_KEY}
+      - GLM_BASE_URL=${GLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      
+      # GitLab Configuration
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_API_URL=${GITLAB_API_URL}
+      - CI_PROJECT_ID=${CI_PROJECT_ID}
+      - CI_MERGE_REQUEST_IID=${CI_MERGE_REQUEST_IID}
+      
+      # Application Configuration
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-1000}
+      - TOKEN_LIMIT=${TOKEN_LIMIT:-8000}
+      - REVIEW_TYPE=${REVIEW_TYPE:-comprehensive}
+      
+      # Monitoring Configuration
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - METRICS_PORT=${METRICS_PORT:-8000}
+      - HEALTH_CHECK_ENABLED=${HEALTH_CHECK_ENABLED:-true}
+      - HEALTH_CHECK_PORT=${HEALTH_CHECK_PORT:-8001}
+      
+      # Security
+      - GITLAB_PRIVATE_TOKEN=${GITLAB_PRIVATE_TOKEN}
+      
+    volumes:
+      - ./logs:/app/logs
+      - ./review_logs:/app/review_logs
+      - ./config:/app/config
+    networks:
+      - review-bot-network
+    ports:
+      - "${METRICS_PORT:-8000}:8000"  # Metrics endpoint
+      - "${HEALTH_CHECK_PORT:-8001}:8001"  # Health check endpoint
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Blue-green deployment support
+  review-bot-new:
+    image: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}
+    container_name: review-bot-new
+    restart: unless-stopped
+    environment:
+      - GLM_API_KEY=${GLM_API_KEY}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_API_URL=${GITLAB_API_URL}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - METRICS_PORT=${METRICS_PORT:-8002}
+      - HEALTH_CHECK_ENABLED=${HEALTH_CHECK_ENABLED:-true}
+      - HEALTH_CHECK_PORT=${HEALTH_CHECK_PORT:-8003}
+    volumes:
+      - ./logs:/app/logs
+      - ./review_logs:/app/review_logs
+    networks:
+      - review-bot-network
+    ports:
+      - "8002:8000"
+      - "8003:8001"
+    profiles:
+      - new
+
+  # Legacy container for rollback
+  review-bot-old:
+    image: ${CI_REGISTRY_IMAGE}:previous
+    container_name: review-bot-old
+    restart: unless-stopped
+    environment:
+      - GLM_API_KEY=${GLM_API_KEY}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_API_URL=${GITLAB_API_URL}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - METRICS_PORT=${METRICS_PORT:-8004}
+      - HEALTH_CHECK_ENABLED=${HEALTH_CHECK_ENABLED:-true}
+      - HEALTH_CHECK_PORT=${HEALTH_CHECK_PORT:-8005}
+    volumes:
+      - ./logs:/app/logs
+      - ./review_logs:/app/review_logs
+    networks:
+      - review-bot-network
+    ports:
+      - "8004:8000"
+      - "8005:8001"
+    profiles:
+      - old
+
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:v2.47.2
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    networks:
+      - review-bot-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Grafana - Visualization
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=strict
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - review-bot-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  # Node Exporter - System metrics
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - review-bot-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Docker Exporter - Container metrics
+  docker-exporter:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: docker-exporter
+    restart: unless-stopped
+    environment:
+      - DATA_SOURCE_NAME=unix:///var/run/docker.sock
+    ports:
+      - "9323:9323"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring/docker-exporter.yml:/etc/docker-exporter/docker-exporter.yml:ro
+    networks:
+      - review-bot-network
+    command:
+      - --web.listen-address=0.0.0.0:9323
+      - --config.file=/etc/docker-exporter/docker-exporter.yml
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9323/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # AlertManager - Alerting
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: alertmanager
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+      - '--web.route-prefix=/'
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    networks:
+      - review-bot-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  # cAdvisor - Container Advisor for advanced container metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: cadvisor
+    restart: unless-stopped
+    command:
+      - '--port=8080'
+      - '--storage_duration=2m'
+      - '--housekeeping_interval=10s'
+      - '--max_housekeeping_interval=1m'
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - review-bot-network
+    privileged: true
+    devices:
+      - /dev/kmsg
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  review-bot-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  logs:
+    driver: local
+  review_logs:
+    driver: local
+  config:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alertmanager_data:
+    driver: local

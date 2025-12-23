@@ -1,0 +1,36 @@
+# Docker Exporter Configuration
+# Basic configuration for docker metrics collection
+
+# Connection settings
+docker:
+  # Docker socket path
+  socket: /var/run/docker.sock
+  # Connection timeout in seconds
+  timeout: 30
+
+# Metrics configuration
+metrics:
+  # Enable container metrics
+  containers: true
+  # Enable image metrics  
+  images: true
+  # Enable system metrics
+  system: true
+  # Enable network metrics
+  network: true
+  # Enable volume metrics
+  volumes: true
+
+# Scrape settings
+scrape:
+  # Scrape interval in seconds
+  interval: 60
+  # Scrape timeout in seconds
+  timeout: 10
+  # Include stopped containers
+  include_stopped: false
+
+# Labels to add to metrics
+labels:
+  environment: production
+  service: docker-exporter

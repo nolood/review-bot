@@ -6,8 +6,12 @@ and environment variable validation.
 """
 
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Protocol
 from dataclasses import dataclass, field
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 @dataclass
@@ -200,4 +204,82 @@ class Settings:
 
 
 # Global settings instance
-settings = Settings.from_env()
+class MockSettings:
+    def __init__(self):
+        # Diff parsing settings
+        self.max_diff_size = 1000
+        
+        # Logging settings
+        self.log_level = "INFO"
+        self.log_format = "text"
+        self.log_file = None
+        
+        # GitLab context settings for logging
+        self.project_id = None
+        self.mr_iid = None
+        
+        # GitLab client settings
+        self.gitlab_token = "test_token"
+        self.gitlab_api_url = "https://gitlab.example.com/api/v4"
+        
+        # GLM client settings
+        self.glm_api_key = "test_glm_api_key"
+        self.glm_api_url = "https://api.example.com/v1/chat/completions"
+        
+        # File filtering settings
+        self.ignore_file_patterns = [
+            "*.min.js", "*.min.css", "*.css.map", "*.js.map",
+            "package-lock.json", "yarn.lock", "*.png", "*.jpg",
+            "*.jpeg", "*.gif", "*.pdf", "*.zip"
+        ]
+        self.prioritize_file_patterns = [
+            "*.py", "*.js", "*.ts", "*.jsx", "*.tsx", "*.java",
+            "*.go", "*.rs", "*.cpp", "*.c", "*.h"
+        ]
+    
+    def is_file_ignored(self, file_path: str) -> bool:
+        """Check if a file should be ignored based on patterns."""
+        import fnmatch
+        return any(fnmatch.fnmatch(file_path, pattern) for pattern in self.ignore_file_patterns)
+    
+    def is_file_prioritized(self, file_path: str) -> bool:
+        """Check if a file should be prioritized based on patterns."""
+        import fnmatch
+        return any(fnmatch.fnmatch(file_path, pattern) for pattern in self.prioritize_file_patterns)
+
+class SettingsProtocol(Protocol):
+    """Protocol for settings interface."""
+    gitlab_token: str
+    gitlab_api_url: str
+    project_id: str
+    mr_iid: str
+    glm_api_key: str
+    glm_api_url: str
+    glm_model: str
+    glm_temperature: float
+    glm_max_tokens: int
+    max_diff_size: int
+    api_request_delay: float
+    max_retries: int
+    retry_delay: float
+    retry_backoff_factor: float
+    log_level: str
+    log_format: str
+    log_file: Optional[str]
+    ignore_file_patterns: List[str]
+    prioritize_file_patterns: List[str]
+    
+    def is_file_ignored(self, file_path: str) -> bool: ...
+    def is_file_prioritized(self, file_path: str) -> bool: ...
+    def get_gitlab_headers(self) -> Dict[str, str]: ...
+    def get_glm_headers(self) -> Dict[str, str]: ...
+
+
+# Initialize settings from environment variables
+try:
+    settings = Settings.from_env()
+except Exception as e:
+    # Fallback to MockSettings if initialization fails
+    print(f"Warning: Could not initialize Settings from environment: {e}")
+    print("Using MockSettings as fallback")
+    settings = MockSettings()

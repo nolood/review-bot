@@ -757,3 +757,458 @@ kubectl logs -l app=review-bot > review-bot-debug.log
 ```
 
 This deployment guide covers all major deployment scenarios and provides production-ready configurations for the GLM Code Review Bot.
+
+## Production Readiness Checklist
+
+### Pre-Deployment Requirements
+
+Before deploying to production, ensure the following are completed:
+
+#### Security Configuration
+- [ ] All API tokens are properly secured and rotated
+- [ ] SSL/TLS certificates are installed and valid
+- [ ] Network policies are configured
+- [ ] Access controls are implemented
+- [ ] Secrets management is configured (Vault/AWS Secrets Manager)
+- [ ] Security scanning passes (refer to `security.md`)
+
+#### Environment Setup
+- [ ] Production environment variables are configured
+- [ ] Monitoring and alerting are set up
+- [ ] Backup procedures are documented and tested
+- [ ] Resource limits are properly sized
+- [ ] Health checks are implemented
+- [ ] Logging is configured for production
+
+#### CI/CD Pipeline
+- [ ] `.gitlab-ci.yml` is configured for production
+- [ ] Docker images are built and pushed to registry
+- [ ] Blue-green deployment strategy is tested
+- [ ] Rollback procedures are documented
+- [ ] Integration tests pass in staging
+
+### Production Deployment Process
+
+#### 1. Environment Preparation
+
+```bash
+# Create production environment file
+cat > .env.production << EOF
+# Core Configuration
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+LOG_FILE=/var/log/review-bot/app.log
+
+# API Configuration
+GITLAB_API_URL=https://gitlab.company.com/api/v4
+GLM_API_URL=https://api.z.ai/api/paas/v4/chat/completions
+
+# Processing Configuration
+MAX_DIFF_SIZE=75000
+MAX_FILES_PER_COMMENT=15
+ENABLE_INLINE_COMMENTS=true
+MIN_SEVERITY_LEVEL=medium
+
+# Performance Tuning
+API_REQUEST_DELAY=1.0
+MAX_PARALLEL_REQUESTS=2
+TIMEOUT_SECONDS=900
+GLM_TIMEOUT=120
+
+# Security
+ENABLE_SECURITY_REVIEW=true
+REDACT_SENSITIVE_DATA=true
+SSL_VERIFY=true
+
+# Monitoring
+ENABLE_METRICS=true
+METRICS_PORT=9090
+HEALTH_CHECK_INTERVAL=30s
+EOF
+```
+
+#### 2. Production Deployment Commands
+
+```bash
+# Deploy to production using CI/CD
+git push origin main  # Triggers production deployment pipeline
+
+# Or deploy manually
+./scripts/deploy.sh production latest
+
+# Verify deployment
+./scripts/health-check.sh review-bot
+```
+
+#### 3. Post-Deployment Verification
+
+```bash
+# Check service status
+docker ps | grep review-bot
+
+# Check logs for errors
+docker logs review-bot --tail=100 | grep ERROR
+
+# Verify health endpoint
+curl -f https://review-bot.example.com/health
+
+# Check metrics endpoint
+curl https://review-bot.example.com/metrics
+```
+
+## Environment-Specific Deployments
+
+### Development Environment
+
+**Purpose**: Local development and testing
+**Configuration**: `config/development.env`
+**Resources**: Minimal (1 CPU, 512MB RAM)
+**Monitoring**: Basic logging only
+
+```bash
+# Quick development setup
+docker-compose -f docker-compose.yml up -d
+docker-compose -f docker-compose.yml logs -f review-bot
+```
+
+### Staging Environment
+
+**Purpose**: Pre-production testing
+**Configuration**: `config/staging.env`
+**Resources**: Medium (2 CPUs, 1GB RAM)
+**Monitoring**: Full logging + basic metrics
+
+```bash
+# Deploy to staging
+./scripts/deploy.sh staging latest
+
+# Run integration tests against staging
+python -m pytest tests/integration/ --base-url=https://review-bot-staging.example.com
+```
+
+### Production Environment
+
+**Purpose**: Live service
+**Configuration**: `config/production.env`
+**Resources**: High (4 CPUs, 2GB RAM per replica)
+**Monitoring**: Full observability stack
+
+```bash
+# Production deployment (blue-green)
+./scripts/deploy.sh production latest
+
+# Scale horizontally
+docker-compose -f docker-compose.prod.yml up -d --scale review-bot=3
+```
+
+## High Availability Deployment
+
+### Multi-Region Setup
+
+```yaml
+# k8s/multi-region-deployment.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: review-bot-config
+data:
+  REGION_PRIMARY: "us-east-1"
+  REGION_SECONDARY: "us-west-2"
+  ENABLE_CROSS_REGION_SYNC: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: review-bot-primary
+  labels:
+    app: review-bot
+    region: primary
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: review-bot
+      region: primary
+  template:
+    metadata:
+      labels:
+        app: review-bot
+        region: primary
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: region
+                operator: In
+                values:
+                - primary
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: review-bot
+        image: review-bot:latest
+        env:
+        - name: REGION
+          value: "primary"
+        - name: IS_PRIMARY
+          value: "true"
+```
+
+### Database Replication (if needed)
+
+```yaml
+# PostgreSQL for review queue persistence
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: review-bot-db
+spec:
+  instances: 3
+  primaryUpdateStrategy: unsupervised
+  
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "256MB"
+      effective_cache_size: "1GB"
+      
+  bootstrap:
+    initdb:
+      database: reviewbot
+      owner: reviewbot
+      secret:
+        name: review-bot-db-creds
+        
+  storage:
+    size: 100Gi
+    storageClass: fast-ssd
+    
+  monitoring:
+    enabled: true
+```
+
+## Disaster Recovery
+
+### Backup Strategy
+
+```bash
+#!/bin/bash
+# scripts/backup.sh
+
+BACKUP_DIR="/opt/backups/review-bot"
+DATE=$(date +%Y%m%d_%H%M%S)
+
+# Create backup directory
+mkdir -p "$BACKUP_DIR"
+
+# Backup configurations
+tar -czf "$BACKUP_DIR/config-$DATE.tar.gz" config/ .env
+
+# Backup Docker volumes
+docker run --rm -v review-bot_data:/data -v "$BACKUP_DIR":/backup \
+  alpine tar czf "/backup/data-$DATE.tar.gz" -C /data .
+
+# Backup database (if using PostgreSQL)
+kubectl exec -n review-bot deployment/review-bot-db -- \
+  pg_dump -U reviewbot reviewbot > "$BACKUP_DIR/db-$DATE.sql"
+
+# Upload to cloud storage (AWS S3 example)
+aws s3 sync "$BACKUP_DIR" s3://review-bot-backups/$DATE/
+
+# Cleanup old backups (keep 30 days)
+find "$BACKUP_DIR" -type f -mtime +30 -delete
+
+echo "Backup completed: $DATE"
+```
+
+### Recovery Procedures
+
+```bash
+#!/bin/bash
+# scripts/recover.sh
+
+BACKUP_DATE=$1
+BACKUP_DIR="/opt/backups/review-bot"
+
+if [ -z "$BACKUP_DATE" ]; then
+    echo "Usage: $0 <backup_date>"
+    exit 1
+fi
+
+# Stop current deployment
+docker-compose -f docker-compose.prod.yml down
+
+# Restore configurations
+tar -xzf "$BACKUP_DIR/config-$BACKUP_DATE.tar.gz"
+
+# Restore data volumes
+docker run --rm -v review-bot_data:/data -v "$BACKUP_DIR":/backup \
+  alpine tar xzf "/backup/data-$BACKUP_DATE.tar.gz" -C /data
+
+# Restore database (if needed)
+kubectl exec -i -n review-bot deployment/review-bot-db -- \
+  psql -U reviewbot -c "DROP DATABASE IF EXISTS reviewbot;"
+kubectl exec -i -n review-bot deployment/review-bot-db -- \
+  psql -U reviewbot -c "CREATE DATABASE reviewbot;"
+kubectl exec -i -n review-bot deployment/review-bot-db -- \
+  psql -U reviewbot reviewbot < "$BACKUP_DIR/db-$BACKUP_DATE.sql"
+
+# Restart services
+docker-compose -f docker-compose.prod.yml up -d
+
+# Verify recovery
+./scripts/health-check.sh review-bot
+
+echo "Recovery completed from backup: $BACKUP_DATE"
+```
+
+## Performance Optimization
+
+### Resource Tuning Guidelines
+
+#### CPU Allocation
+- **Small deployments**: 0.5 - 1 CPU cores
+- **Medium deployments**: 2 - 4 CPU cores  
+- **Large deployments**: 4 - 8 CPU cores
+
+#### Memory Allocation
+- **Minimum**: 512MB RAM
+- **Recommended**: 1-2GB RAM per instance
+- **Large diffs**: 4GB+ RAM for processing
+
+#### Scaling Thresholds
+```yaml
+# Horizontal Pod Autoscaler configuration
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: review-bot-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: review-bot
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+```
+
+### Caching Strategy
+
+```python
+# Redis configuration for production
+REDIS_CONFIG = {
+    'host': 'redis-cluster.review-bot.svc.cluster.local',
+    'port': 6379,
+    'db': 0,
+    'password': os.getenv('REDIS_PASSWORD'),
+    'ssl': True,
+    'ssl_cert_reqs': 'required',
+    'socket_timeout': 5,
+    'socket_connect_timeout': 5,
+    'retry_on_timeout': True,
+    'health_check_interval': 30
+}
+
+# Cache settings
+CACHE_SETTINGS = {
+    'diff_analysis_ttl': 3600,  # 1 hour
+    'token_estimation_ttl': 86400,  # 24 hours
+    'file_metadata_ttl': 1800,  # 30 minutes
+    'rate_limit_ttl': 60,  # 1 minute
+}
+```
+
+## Migration Guide
+
+### Version Upgrade Process
+
+1. **Pre-upgrade Checks**
+```bash
+# Check current version
+docker inspect review-bot | grep -i version
+
+# Run compatibility tests
+python -m pytest tests/upgrade/ -v
+
+# Backup current deployment
+./scripts/backup.sh
+```
+
+2. **Rolling Upgrade**
+```bash
+# Update to new version
+docker pull review-bot:v2.1.0
+
+# Rolling update with zero downtime
+docker-compose -f docker-compose.prod.yml up -d --no-deps review-bot
+
+# Monitor rollout
+watch docker ps | grep review-bot
+```
+
+3. **Post-upgrade Validation**
+```bash
+# Verify new version
+curl https://review-bot.example.com/health
+
+# Run smoke tests
+python -m pytest tests/smoke/ --base-url=https://review-bot.example.com
+
+# Monitor for 15 minutes
+./scripts/monitor-deployment.sh 900
+```
+
+### Configuration Migration
+
+```bash
+#!/bin/bash
+# scripts/migrate-config.sh
+
+OLD_VERSION=$1
+NEW_VERSION=$2
+
+echo "Migrating configuration from $OLD_VERSION to $NEW_VERSION"
+
+# Backup current config
+cp .env .env.backup.$OLD_VERSION
+
+# Update configuration template
+python scripts/config-migrator.py \
+  --from-version $OLD_VERSION \
+  --to-version $NEW_VERSION \
+  --config-file .env
+
+# Validate new configuration
+python review_bot.py --validate-only
+
+echo "Configuration migration completed"
+```
+
+This enhanced deployment guide provides comprehensive coverage of production deployment scenarios, high availability setup, disaster recovery procedures, and performance optimization strategies for the GLM Code Review Bot.

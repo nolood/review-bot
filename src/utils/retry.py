@@ -9,13 +9,14 @@ import time
 import random
 import functools
 import asyncio
-from typing import Any, Optional, List, Tuple, Dict, Callable, Type, TypeVar, Union
+from dataclasses import dataclass
+from typing import Any, Optional, List, Tuple, Dict, Callable, Type, TypeVar
 
 T = TypeVar('T')
-from dataclasses import dataclass
 
 try:
     from .exceptions import ReviewBotError, RetryExhaustedError
+    from .logger import get_logger
 except ImportError:
     # Fallback for circular import during development
     class ReviewBotError(Exception):
@@ -26,6 +27,8 @@ except ImportError:
             super().__init__(message)
             self.attempts = attempts
             self.last_error = last_error
+    
+    from .logger import get_fallback_logger as get_logger
 
 
 @dataclass
@@ -188,7 +191,6 @@ def retry_with_backoff(
                         
                         # Log successful retry if we had attempts
                         if attempt > 0:
-                            from .logger import get_logger
                             logger = get_logger("retry")
                             logger.info(
                                 f"Operation succeeded after {attempt} retries",
@@ -212,7 +214,7 @@ def retry_with_backoff(
                             break
                         
                         # Log retry attempt
-                        from .logger import get_logger
+                        
                         logger = get_logger("retry")
                         logger.warning(
                             f"Operation failed, retrying... (attempt {attempt + 1}/{config.max_retries})",
@@ -253,7 +255,7 @@ def retry_with_backoff(
                         
                         # Log successful retry if we had attempts
                         if attempt > 0:
-                            from .logger import get_logger
+                            
                             logger = get_logger("retry")
                             logger.info(
                                 f"Operation succeeded after {attempt} retries",
@@ -277,7 +279,7 @@ def retry_with_backoff(
                             break
                         
                         # Log retry attempt
-                        from .logger import get_logger
+                        
                         logger = get_logger("retry")
                         logger.warning(
                             f"Operation failed, retrying... (attempt {attempt + 1}/{config.max_retries})",

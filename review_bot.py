@@ -22,6 +22,10 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Tuple, Type, Protocol, cast
+from dotenv import load_dotenv
+
+# Load environment variables from .env file at startup
+load_dotenv()
 
 # ============================================================================
 # PROTOCOL DEFINITIONS
@@ -203,14 +207,14 @@ settings = cast(SettingsProtocol, MockSettings())
 
 def setup_logging(level: str = AppConfig.LOG_LEVEL, format_type: str = AppConfig.LOG_FORMAT, log_file: Optional[str] = None) -> logging.Logger:
     """Setup logging with the specified parameters."""
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(level=log_level)
-    return logging.getLogger()
+    from src.utils.logger import get_fallback_setup_logging
+    return get_fallback_setup_logging(level, format_type, log_file)
 
 
 def get_logger(name: str) -> LoggerProtocol:
     """Get a logger instance with the specified name."""
-    return MockLogger(name)
+    from src.utils.logger import get_fallback_logger
+    return MockLogger(name)  # Keep MockLogger for protocol compatibility
 
 
 class GitLabClient:
@@ -300,7 +304,10 @@ try:
     
     comment_publisher_module = importlib.import_module('comment_publisher')
     CommentPublisher = comment_publisher_module.CommentPublisher
-    
+
+    line_code_mapper_module = importlib.import_module('line_code_mapper')
+    LinePositionValidator = line_code_mapper_module.LinePositionValidator
+
     # Import utils
     logger_module = importlib.import_module('utils.logger')
     setup_logging = logger_module.setup_logging
@@ -416,42 +423,8 @@ class MockSettings:
         return any(fnmatch.fnmatch(file_path, pattern) for pattern in self.ignore_file_patterns)
 
 
-class MockLogger:
-    """Mock logger implementation for fallback mode."""
-    
-    def __init__(self, name: str):
-        self._logger = logging.getLogger(name)
-    
-    def debug(self, msg: str, **kwargs) -> None:
-        self._logger.debug(msg, **kwargs)
-    
-    def info(self, msg: str, **kwargs) -> None:
-        self._logger.info(msg, **kwargs)
-    
-    def warning(self, msg: str, **kwargs) -> None:
-        self._logger.warning(msg, **kwargs)
-    
-    def error(self, msg: str, **kwargs) -> None:
-        self._logger.error(msg, **kwargs)
-    
-    def exception(self, msg: str, **kwargs) -> None:
-        self._logger.exception(msg, **kwargs)
-
-
 # Initialize fallback implementations - will be replaced if imports succeed
 settings: SettingsProtocol = MockSettings()  # type: ignore
-
-
-def setup_logging(level: str = AppConfig.LOG_LEVEL, format_type: str = AppConfig.LOG_FORMAT, log_file: Optional[str] = None):
-    """Setup logging with the specified parameters."""
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(level=log_level)
-    return logging.getLogger()
-
-
-def get_logger(name: str) -> LoggerProtocol:
-    """Get a logger instance with the specified name."""
-    return MockLogger(name)
 
 
 # Add src directory to Python path for imports
@@ -469,9 +442,10 @@ try:
     import src.glm_client as glm_client_module
     import src.diff_parser as diff_parser_module
     import src.comment_publisher as comment_publisher_module
+    import src.line_code_mapper as line_code_mapper_module
     import src.utils.logger as logger_module
     import src.utils.exceptions as exceptions_module
-    
+
     # Use imported implementations
     ReviewType = config_prompts.ReviewType
     settings = config_settings.settings
@@ -479,6 +453,7 @@ try:
     GLMClient = glm_client_module.GLMClient
     DiffParser = diff_parser_module.DiffParser
     CommentPublisher = comment_publisher_module.CommentPublisher
+    LinePositionValidator = line_code_mapper_module.LinePositionValidator
     setup_logging = logger_module.setup_logging
     get_logger = logger_module.get_logger
     ReviewBotError = exceptions_module.ReviewBotError
@@ -695,13 +670,21 @@ class ReviewProcessor:
                 max_tokens=getattr(self.settings, 'glm_max_tokens', AppConfig.MAX_TOKENS)
             )
             diff_parser = DiffParser(max_chunk_tokens=getattr(self.settings, 'max_diff_size', AppConfig.MAX_DIFF_SIZE))
-            comment_publisher = CommentPublisher(gitlab_client)
-            
+
+            # Create line position validator for validating inline comment positions
+            line_position_validator = LinePositionValidator()
+            self.logger.info("Line position validator created successfully")
+
+            # Pass the validator to comment publisher
+            comment_publisher = CommentPublisher(gitlab_client, line_position_validator)
+            self.logger.info("Comment publisher initialized with line position validator")
+
             clients = {
                 "gitlab": gitlab_client,
                 "glm": glm_client,
                 "diff_parser": diff_parser,
-                "comment_publisher": comment_publisher
+                "comment_publisher": comment_publisher,
+                "line_position_validator": line_position_validator
             }
             return True, clients
         except Exception as e:
@@ -712,24 +695,37 @@ class ReviewProcessor:
         """Fetch MR details and diffs."""
         gitlab_client = clients["gitlab"]
         diff_parser = clients["diff_parser"]
-        
+        line_position_validator = clients.get("line_position_validator")
+
         # Fetch MR details
         self.logger.info("Fetching merge request details")
         context.mr_details = gitlab_client.get_merge_request_details()
-        
+
         # Fetch and parse diffs
         self.logger.info("Fetching and parsing MR diffs")
-        diff_data = gitlab_client.get_merge_request_diff()
-        
-        # Parse GitLab diff format
-        gitlab_diffs = [{"diff": diff_data}]  # Wrap for compatibility
-        file_diffs = diff_parser.parse_gitlab_diff(gitlab_diffs)
-        
+        diff_data = gitlab_client.get_merge_request_diffs_raw()
+
+        # Build line position mappings for inline comment validation
+        if line_position_validator:
+            self.logger.info("Building line position mappings for inline comments")
+            try:
+                line_position_validator.build_mappings_from_diff_data(diff_data)
+                self.logger.info(
+                    f"Line position mappings built for {len(line_position_validator.file_mappings)} files"
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to build line position mappings: {e}", exc_info=True)
+        else:
+            self.logger.warning("Line position validator is None - inline comment validation disabled")
+
+        # Parse GitLab diff format (diff_data is already a list of diffs)
+        file_diffs = diff_parser.parse_gitlab_diff(diff_data)
+
         # Generate diff summary if files were found
         if file_diffs:
             context.diff_summary = diff_parser.get_diff_summary(file_diffs)
             self.logger.info("Diff processing completed", extra=context.diff_summary or {})
-        
+
         return file_diffs, context.diff_summary
     
     def _process_chunks(self, clients: Dict[str, Any], chunks: List[Any], review_type: ReviewType, custom_prompt: Optional[str]) -> Tuple[List[Any], int]:
@@ -814,6 +810,60 @@ class ReviewProcessor:
                     "would_publish_inline_comments": len(comment_batch.inline_comments)
                 }
             )
+
+            # Print formatted comments preview in dry-run mode
+            print("\n" + "="*80)
+            print("🔍 DRY RUN MODE - PREVIEW OF COMMENTS THAT WOULD BE PUBLISHED")
+            print("="*80)
+
+            if comment_batch.summary_comment:
+                print("\n📋 SUMMARY COMMENT:")
+                print("-" * 80)
+                print(comment_batch.summary_comment)
+                print("-" * 80)
+
+            if comment_batch.file_comments:
+                print(f"\n📁 FILE COMMENTS ({len(comment_batch.file_comments)}):")
+                for i, comment in enumerate(comment_batch.file_comments, 1):
+                    print(f"\n--- Comment {i} ---")
+                    # FormattedComment is a dataclass, not a dict
+                    if hasattr(comment, 'file_path'):
+                        print(f"File: {comment.file_path}")
+                        if comment.line_number:
+                            print(f"Line: {comment.line_number}")
+                        print(f"Type: {comment.comment_type.value}")
+                        print(f"Severity: {comment.severity.value}")
+                        if comment.title:
+                            print(f"Title: {comment.title}")
+                        print(f"Body:\n{comment.body}")
+                    else:
+                        print(comment)
+                    print("-" * 40)
+
+            if comment_batch.inline_comments:
+                print(f"\n💬 INLINE COMMENTS ({len(comment_batch.inline_comments)}):")
+                for i, comment in enumerate(comment_batch.inline_comments, 1):
+                    print(f"\n--- Inline Comment {i} ---")
+                    # FormattedComment is a dataclass, not a dict
+                    if hasattr(comment, 'file_path'):
+                        print(f"File: {comment.file_path}")
+                        if comment.line_number:
+                            print(f"Line: {comment.line_number}")
+                        print(f"Type: {comment.comment_type.value}")
+                        print(f"Severity: {comment.severity.value}")
+                        if comment.title:
+                            print(f"Title: {comment.title}")
+                        print(f"Body:\n{comment.body}")
+                    else:
+                        print(comment)
+                    print("-" * 40)
+
+            if not comment_batch.summary_comment and not comment_batch.file_comments and not comment_batch.inline_comments:
+                print("\n⚠️  No comments generated")
+
+            print("\n" + "="*80)
+            print("✅ Dry run complete - no comments were published to GitLab")
+            print("="*80 + "\n")
     
     def process_merge_request(
         self,

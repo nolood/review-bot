@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  review-bot:
+    extends:
+      file: docker-compose.yml
+      service: review-bot
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
+      - REVIEW_TYPE=${REVIEW_TYPE:-comprehensive}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    networks:
+      - review-bot-staging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.review-bot-staging.rule=Host(`review-bot-staging.example.com`)"
+      - "traefik.http.routers.review-bot-staging.entrypoints=websecure"
+      - "traefik.http.routers.review-bot-staging.tls.certresolver=letsencrypt"
+
+networks:
+  review-bot-staging:
+    driver: bridge

@@ -20,10 +20,12 @@ Example:
 import re
 import os
 import fnmatch
-from typing import List, Dict, Any, Optional, Tuple, Iterator, Literal, Union
+from typing import List, Dict, Any, Optional, Tuple, Iterator, Literal, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
 from pathlib import Path
 import logging
+
+# Type checking imports removed to avoid conflicts
 
 # Constants
 DEFAULT_MAX_CHUNK_TOKENS = 50000
@@ -83,8 +85,11 @@ LANGUAGE_MAPPING: Dict[str, str] = {
 
 # Regular expression patterns
 HUNK_HEADER_PATTERN = re.compile(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
-PLUS_LINE_PATTERN = re.compile(r'^\+')
-MINUS_LINE_PATTERN = re.compile(r'^-')
+PLUS_LINE_PATTERN = re.compile(r'^\s*\+')
+MINUS_LINE_PATTERN = re.compile(r'^\s*-')
+CONTEXT_LINE_PATTERN = re.compile(r'^ ')
+
+print("Patterns updated")
 CONTEXT_LINE_PATTERN = re.compile(r'^ ')
 
 # Type aliases
@@ -93,34 +98,11 @@ ContentType = Literal["code", "text", "diff"]
 
 # Import from actual modules with fallback for direct execution
 try:
-    from config.settings import settings
-    from utils.exceptions import DiffParsingError, TokenLimitError
-    from utils.logger import get_logger
+    from src.config.settings import settings
+    from src.utils.logger import get_logger
+    from src.utils.exceptions import DiffParsingError, TokenLimitError
 except ImportError:
     # Fallback for direct execution during development
-    class MockSettings:
-        def __init__(self):
-            self.max_diff_size = DEFAULT_MAX_CHUNK_TOKENS
-            self.ignore_file_patterns = [
-                "*.min.js", "*.min.css", "*.css.map", "*.js.map",
-                "package-lock.json", "yarn.lock", "*.png", "*.jpg",
-                "*.jpeg", "*.gif", "*.pdf", "*.zip"
-            ]
-            self.prioritize_file_patterns = [
-                "*.py", "*.js", "*.ts", "*.jsx", "*.tsx", "*.java",
-                "*.go", "*.rs", "*.cpp", "*.c", "*.h"
-            ]
-        
-        def is_file_ignored(self, file_path: str) -> bool:
-            """Check if a file should be ignored based on patterns."""
-            return any(fnmatch.fnmatch(file_path, pattern) for pattern in self.ignore_file_patterns)
-        
-        def is_file_prioritized(self, file_path: str) -> bool:
-            """Check if a file should be prioritized based on patterns."""
-            return any(fnmatch.fnmatch(file_path, pattern) for pattern in self.prioritize_file_patterns)
-    
-    settings = MockSettings()
-    
     class DiffParsingError(Exception):
         """Exception raised for errors in parsing diff content."""
         def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
@@ -131,90 +113,76 @@ except ImportError:
         """Exception raised when token limits are exceeded."""
         pass
     
-    def get_logger(name: str) -> logging.Logger:
-        """Get a logger instance."""
-        return logging.getLogger(name)
+    class MockSettings:
+        def __init__(self):
+            self.max_diff_size = DEFAULT_MAX_CHUNK_TOKENS
+            self.ignore_file_patterns = [
+                "*.min.js", "*.min.css", "*.css.map", "*.js.map",
+                "package-lock.json", "yarn.lock", "*.png", "*.jpg",
+                "*.jpeg", "*.gif", "*.pdf", "*.zip"
+            ]
+            self.prioritize_file_patterns = [
+                "*.py", "*.js", "*.ts", "*.tsx", "*.jsx", "*.go", "*.rs",
+                "*.java", "*.cpp", "*.c", "*.h", "*.hpp", "*.cs", "*.php"
+            ]
+            self.max_file_size = 50000  # 50KB
+        
+        def __getattr__(self, name: str) -> Any:
+            # Return None for any missing attributes to avoid AttributeError
+            return None
+    
+        def __contains__(self, item: str) -> bool:
+            # Support 'in' operator for pattern checking
+            return hasattr(self, item) and getattr(self, item) is not None
+    
+        def check(self, item: str) -> bool:
+            """Check if item exists in settings."""
+            return item in self
+    
+        def get(self, key: str, default: Any = None) -> Any:
+            """Get setting value with default."""
+            return getattr(self, key, default)
+        
+        def get_int(self, key: str, default: int = 0) -> int:
+            """Get integer setting value."""
+            try:
+                return int(getattr(self, key, default))
+            except (ValueError, TypeError):
+                return default
+        
+        def get_bool(self, key: str, default: bool = False) -> bool:
+            """Get boolean setting value."""
+            val = getattr(self, key, default)
+            if isinstance(val, str):
+                return val.lower() in ('true', '1', 'yes', 'on')
+            return bool(val)
+        
+        def get_list(self, key: str, default: list[str] | None = None) -> list[str]:
+            """Get list setting value."""
+            val = getattr(self, key, default)
+            if val is None:
+                return []
+            if isinstance(val, str):
+                return [v.strip() for v in val.split(',') if v.strip()]
+            return list(val) if isinstance(val, (list, tuple)) else [str(val)]
+        
+        def __str__(self) -> str:
+            return f"MockSettings(max_diff_size={self.max_diff_size})"
+        
+        def __repr__(self) -> str:
+            return self.__str__()
+    
+    settings = MockSettings()
+    # Use centralized fallback logger
+    from src.utils.logger import get_fallback_logger as get_logger
 
 # Import tiktoken for token estimation
 try:
-    import tiktoken
+    import tiktoken  # type: ignore
     TIKTOKEN_AVAILABLE = True
 except ImportError:
     tiktoken = None
     TIKTOKEN_AVAILABLE = False
-
-# Initialize logger
-logger = get_logger(__name__)
-
-# Import tiktoken for token estimation
-try:
-    import tiktoken
-    TIKTOKEN_AVAILABLE = True
-except ImportError:
-    tiktoken = None
-    TIKTOKEN_AVAILABLE = False
-
-# Constants
-DEFAULT_MAX_CHUNK_TOKENS = 50000
-DEFAULT_CONTEXT_LINES = 3
-TOP_LARGEST_FILES_COUNT = 5
-TOKEN_ESTIMATION_RATIOS = {
-    'code': 0.25,      # 1 token ≈ 4 characters of code
-    'text': 0.75,      # 1 token ≈ 1.33 characters of English text
-    'diff': 0.3        # Account for diff markers
-}
-PRIORITY_VALUES = {
-    "HIGH": 0,
-    "NORMAL": 1,
-    "LOW": 3
-}
-CHANGE_TYPE_PRIORITY = {
-    "modified": 0,
-    "added": 1,
-    "renamed": 2,
-    "deleted": 3
-}
-
-# Language mapping for file extensions
-LANGUAGE_MAPPING: Dict[str, str] = {
-    ".py": "python",
-    ".js": "javascript",
-    ".ts": "typescript",
-    ".jsx": "javascript",
-    ".tsx": "typescript",
-    ".java": "java",
-    ".go": "go",
-    ".rs": "rust",
-    ".cpp": "cpp",
-    ".c": "c",
-    ".h": "c",
-    ".cs": "csharp",
-    ".php": "php",
-    ".rb": "ruby",
-    ".swift": "swift",
-    ".kt": "kotlin",
-    ".scala": "scala",
-    ".sh": "shell",
-    ".sql": "sql",
-    ".html": "html",
-    ".css": "css",
-    ".scss": "scss",
-    ".sass": "sass",
-    ".less": "less",
-    ".xml": "xml",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".json": "json",
-    ".md": "markdown",
-    ".rst": "rst",
-    ".dockerfile": "dockerfile",
-}
-
-# Regular expression patterns
-HUNK_HEADER_PATTERN = re.compile(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
-PLUS_LINE_PATTERN = re.compile(r'^\+')
-MINUS_LINE_PATTERN = re.compile(r'^-')
-CONTEXT_LINE_PATTERN = re.compile(r'^ ')
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -377,6 +345,67 @@ class DiffChunk:
 
 
 # ==============================
+# Simple Diff Classes (for test compatibility)
+# ==============================
+
+@dataclass
+class SimpleFileChange:
+    """
+    Simple representation of a file change for test compatibility.
+    
+    Attributes:
+        type: Type of change (addition, deletion)
+        content: The content that was added or removed
+    """
+    type: str
+    content: str
+
+
+class SimpleFileDiff:
+    """
+    Simple file diff representation for test compatibility.
+    
+    This class provides the interface expected by the tests,
+    wrapping the more sophisticated FileDiff class.
+    
+    Attributes:
+        path: File path
+        changes: List of file changes
+    """
+    def __init__(self, file_diff: FileDiff):
+        """
+        Initialize from a FileDiff object.
+        
+        Args:
+            file_diff: FileDiff object to wrap
+        """
+        self.path = file_diff.file_path
+        self.changes = self._extract_changes(file_diff)
+    
+    def _extract_changes(self, file_diff: FileDiff) -> List[SimpleFileChange]:
+        """
+        Extract simple changes from FileDiff hunks.
+        
+        Args:
+            file_diff: FileDiff object
+            
+        Returns:
+            List of SimpleFileChange objects
+        """
+        changes = []
+        
+        for hunk in file_diff.hunks:
+            lines = hunk.split('\n')
+            for line in lines:
+                if line.startswith('+') and not line.startswith('+++'):
+                    changes.append(SimpleFileChange("addition", line[1:]))
+                elif line.startswith('-') and not line.startswith('---'):
+                    changes.append(SimpleFileChange("deletion", line[1:]))
+        
+        return changes
+
+
+# ==============================
 # Main Parser Class
 # ==============================
 
@@ -430,13 +459,13 @@ class DiffParser:
     def parse_gitlab_diff(self, diff_data: List[Dict[str, Any]]) -> List[FileDiff]:
         """
         Parse GitLab diff format into FileDiff objects.
-        
+
         Args:
             diff_data: Raw diff data from GitLab API
-            
+
         Returns:
             List of FileDiff objects
-            
+
         Raises:
             DiffParsingError: If diff format is invalid
             TypeError: If diff_data is not a list of dictionaries
@@ -444,24 +473,52 @@ class DiffParser:
         # Validate input
         if not isinstance(diff_data, list):
             raise TypeError("diff_data must be a list")
-        
+
+        # Debug: log structure of input data
+        self.logger.debug(
+            f"Parsing GitLab diff data with {len(diff_data)} entries",
+            extra={
+                "total_entries": len(diff_data),
+                "first_entry_keys": list(diff_data[0].keys()) if diff_data else []
+            }
+        )
+
         try:
             file_diffs = []
-            
+
             for i, diff_entry in enumerate(diff_data):
                 if not isinstance(diff_entry, dict):
                     self.logger.warning(f"Skipping invalid diff entry at index {i}: not a dictionary")
                     continue
-                
+
+                # Debug: log entry structure
+                self.logger.debug(
+                    f"Processing diff entry {i}",
+                    extra={
+                        "entry_keys": list(diff_entry.keys()),
+                        "old_path": diff_entry.get("old_path"),
+                        "new_path": diff_entry.get("new_path"),
+                        "has_diff": "diff" in diff_entry,
+                        "new_file": diff_entry.get("new_file"),
+                        "deleted_file": diff_entry.get("deleted_file"),
+                        "renamed_file": diff_entry.get("renamed_file")
+                    }
+                )
+
                 try:
                     file_diff = self._parse_file_entry(diff_entry)
                     if file_diff:
                         file_diffs.append(file_diff)
+                        self.logger.debug(
+                            f"Successfully parsed file: {file_diff.new_path or file_diff.old_path}"
+                        )
+                    else:
+                        self.logger.warning(f"Diff entry {i} returned None from parser")
                 except Exception as e:
-                    self.logger.error(f"Failed to parse diff entry at index {i}: {e}")
+                    self.logger.error(f"Failed to parse diff entry at index {i}: {e}", exc_info=True)
                     # Continue processing other entries
                     continue
-            
+
             self.logger.info(
                 f"Parsed {len(file_diffs)} file diffs from {len(diff_data)} entries",
                 extra={
@@ -704,22 +761,34 @@ class DiffParser:
         """
         def get_priority(file_diff: FileDiff) -> Tuple[int, int, int]:
             # Primary priority: file pattern matching
-            if settings.is_file_prioritized(file_diff.file_path):
+            file_path = file_diff.file_path
+
+            # Check if file is prioritized
+            is_prioritized = False
+            if hasattr(settings, 'is_file_prioritized') and callable(settings.is_file_prioritized):
+                is_prioritized = settings.is_file_prioritized(file_path)
+
+            # Check if file is ignored
+            is_ignored = False
+            if hasattr(settings, 'is_file_ignored') and callable(settings.is_file_ignored):
+                is_ignored = settings.is_file_ignored(file_path)
+
+            if is_prioritized:
                 pattern_priority = PRIORITY_VALUES["HIGH"]
-            elif settings.is_file_ignored(file_diff.file_path):
+            elif is_ignored:
                 pattern_priority = PRIORITY_VALUES["LOW"]
             else:
                 pattern_priority = PRIORITY_VALUES["NORMAL"]
-            
+
             # Secondary priority: change type
             change_priority = CHANGE_TYPE_PRIORITY.get(
-                file_diff.change_type, 
+                file_diff.change_type,
                 PRIORITY_VALUES["NORMAL"]
             )
-            
+
             # Tertiary: file size (smaller files first)
             size_priority = file_diff.estimate_tokens()
-            
+
             return (pattern_priority, change_priority, size_priority)
         
         return sorted(file_diffs, key=get_priority)
@@ -727,20 +796,282 @@ class DiffParser:
     def _should_ignore_file(self, file_path: str) -> bool:
         """
         Check if a file should be ignored based on patterns.
-        
+
         Args:
             file_path: Path to the file
-            
+
         Returns:
             True if file should be ignored
-            
+
         Raises:
             TypeError: If file_path is not a string
         """
         if not isinstance(file_path, str):
             raise TypeError("file_path must be a string")
+
+        # Check if settings has is_file_ignored method
+        if hasattr(settings, 'is_file_ignored') and callable(settings.is_file_ignored):
+            return settings.is_file_ignored(file_path)
+
+        # Fallback: check ignore patterns directly
+        if hasattr(settings, 'ignore_patterns'):
+            ignore_patterns = settings.ignore_patterns
+            if ignore_patterns:
+                import fnmatch
+                for pattern in ignore_patterns:
+                    if fnmatch.fnmatch(file_path, pattern):
+                        return True
+
+        return False
+    
+    def parse_diff(self, diff_text: str) -> List[Any]:
+        """
+        Parse a unified diff string into file diff objects.
         
-        return settings.is_file_ignored(file_path)
+        This method provides a simplified interface for parsing diff text
+        directly, converting it to the GitLab API format expected by parse_gitlab_diff.
+        
+        Args:
+            diff_text: Unified diff string content
+            
+        Returns:
+            List of parsed file diff objects with path and changes attributes
+            
+        Raises:
+            DiffParsingError: If diff format is invalid
+            TypeError: If diff_text is not a string
+        """
+        # Validate input
+        if not isinstance(diff_text, str):
+            raise TypeError("diff_text must be a string")
+        
+        if not diff_text.strip():
+            return []
+        
+        try:
+            # Convert unified diff to GitLab format
+            diff_data = self._convert_unified_diff_to_gitlab_format(diff_text)
+            
+            # Parse using existing method
+            file_diffs = self.parse_gitlab_diff(diff_data)
+            
+            # Convert to the format expected by tests
+            result = []
+            for file_diff in file_diffs:
+                # Create a simple object with the expected interface
+                simple_diff = self._create_simple_file_diff_object(file_diff)
+                result.append(simple_diff)
+            
+            self.logger.info(
+                f"Parsed {len(result)} files from diff text",
+                extra={"parsed_files": len(result)}
+            )
+            
+            return result
+            
+        except Exception as e:
+            error = DiffParsingError(f"Failed to parse diff text: {str(e)}")
+            error.details["diff_content"] = diff_text[:500]
+            raise error from e
+    
+    def _convert_unified_diff_to_gitlab_format(self, diff_text: str) -> List[Dict[str, Any]]:
+        """
+        Convert unified diff format to GitLab API format.
+        
+        Args:
+            diff_text: Unified diff string
+            
+        Returns:
+            List of diff entries in GitLab API format
+        """
+        diff_entries = []
+        lines = diff_text.strip().split('\n')
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            
+            # Look for file headers
+            if line.startswith('--- ') and i + 1 < len(lines) and lines[i + 1].startswith('+++ '):
+                old_path = line[4:]  # Remove '--- '
+                new_path = lines[i + 1][4:]  # Remove '+++ '
+                
+                # Remove a/ and b/ prefixes if present
+                if old_path.startswith('a/'):
+                    old_path = old_path[2:]
+                if new_path.startswith('b/'):
+                    new_path = new_path[2:]
+                
+                # Find the end of this file's diff
+                diff_content_lines = []
+                j = i + 2
+                
+                while j < len(lines):
+                    next_line = lines[j]
+                    # Stop if we encounter a new file header
+                    if (next_line.startswith('--- ') and 
+                        j + 1 < len(lines) and lines[j + 1].startswith('+++ ')):
+                        break
+                    diff_content_lines.append(next_line)
+                    j += 1
+                
+                # Create diff entry
+                diff_entry = {
+                    "old_path": old_path,
+                    "new_path": new_path,
+                    "diff": "\n".join(diff_content_lines),
+                    "new_file": old_path == "/dev/null",
+                    "deleted_file": new_path == "/dev/null",
+                    "binary_file": False
+                }
+                
+                diff_entries.append(diff_entry)
+                i = j - 1  # -1 because the loop will increment
+            
+            i += 1
+        
+        return diff_entries
+    
+    def chunk_diff(self, diff_text: str, max_tokens: Optional[int] = None) -> List[str]:
+        """
+        Split diff text into chunks within token limits.
+        
+        This method provides a simplified interface for chunking diff text
+        directly without requiring FileDiff objects.
+        
+        Args:
+            diff_text: Unified diff string content
+            max_tokens: Maximum tokens per chunk
+            
+        Returns:
+            List of diff text chunks
+            
+        Raises:
+            TypeError: If diff_text is not a string
+            ValueError: If max_tokens is not a positive integer
+        """
+        # Validate inputs
+        if not isinstance(diff_text, str):
+            raise TypeError("diff_text must be a string")
+        
+        if max_tokens is not None and (not isinstance(max_tokens, int) or max_tokens <= 0):
+            raise ValueError("max_tokens must be a positive integer")
+        
+        if not diff_text.strip():
+            return []
+        
+        # Parse the diff
+        self.parse_diff(diff_text)
+        
+        # Convert to FileDiff objects for chunking
+        gitlab_diffs = self._convert_unified_diff_to_gitlab_format(diff_text)
+        full_file_diffs = self.parse_gitlab_diff(gitlab_diffs)
+        
+        # Chunk using existing method
+        max_tokens = max_tokens or self.max_chunk_tokens
+        chunks = self.chunk_large_diff(full_file_diffs, max_tokens)
+        
+        # Convert chunks back to text format
+        result_chunks = []
+        for chunk in chunks:
+            chunk_text = self._convert_chunk_to_text(chunk)
+            if chunk_text.strip():
+                result_chunks.append(chunk_text)
+        
+        self.logger.info(
+            f"Created {len(result_chunks)} text chunks from diff",
+            extra={
+                "total_chunks": len(result_chunks),
+                "max_tokens_per_chunk": max_tokens
+            }
+        )
+        
+        return result_chunks
+    
+    def _convert_chunk_to_text(self, chunk: DiffChunk) -> str:
+        """
+        Convert a DiffChunk back to unified diff text format.
+        
+        Args:
+            chunk: DiffChunk object
+            
+        Returns:
+            Unified diff text string
+        """
+        if chunk.is_empty():
+            return ""
+        
+        content_parts = []
+        
+        for file_diff in chunk.files:
+            # Add file headers
+            if file_diff.old_path != file_diff.new_path:
+                content_parts.append(f"--- a/{file_diff.old_path}")
+                content_parts.append(f"+++ b/{file_diff.new_path}")
+            else:
+                content_parts.append(f"--- a/{file_diff.file_path}")
+                content_parts.append(f"+++ b/{file_diff.file_path}")
+            
+            # Add diff content
+            content_parts.extend(file_diff.hunks)
+        
+        return "\n".join(content_parts)
+    
+    def _create_simple_file_diff_object(self, file_diff: FileDiff) -> Any:
+        """
+        Create a simple file diff object for test compatibility.
+        
+        Args:
+            file_diff: FileDiff object to convert
+            
+        Returns:
+            Simple object with path and changes attributes
+        """
+        # Create a simple namespace-like object
+        class SimpleDiff:
+            def __init__(self, fd: FileDiff):
+                self.path = fd.file_path
+                self.changes = []
+                
+                # Extract changes from hunks
+                for hunk in fd.hunks:
+                    lines = hunk.split('\n')
+                    for line in lines:
+                        if line.startswith('+') and not line.startswith('+++'):
+                            # Create change object
+                            change = type('Change', (), {
+                                'type': 'addition',
+                                'content': line[1:]
+                            })()
+                            self.changes.append(change)
+                        elif line.startswith('-') and not line.startswith('---'):
+                            # Create change object
+                            change = type('Change', (), {
+                                'type': 'deletion',
+                                'content': line[1:]
+                            })()
+                            self.changes.append(change)
+        
+        return SimpleDiff(file_diff)
+    
+    def _estimate_tokens(self, content: str, content_type: str = "code") -> int:
+        """
+        Estimate token count for content.
+        
+        This is a convenience method that wraps the standalone estimate_tokens function.
+        
+        Args:
+            content: Text content to estimate tokens for
+            content_type: Type of content (code, text, diff)
+            
+        Returns:
+            Estimated token count
+            
+        Raises:
+            TypeError: If content is not a string
+            ValueError: If content_type is not valid
+        """
+        return estimate_tokens(content, content_type)
     
     def extract_file_context(
         self, 

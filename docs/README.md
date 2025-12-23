@@ -5,9 +5,10 @@ This directory contains comprehensive documentation for the GLM-powered GitLab c
 ## Documentation Structure
 
 ### User Documentation
-- [Installation Guide](installation.md) - How to install and set up the bot
+- [Installation Guide](installation.md) - How to install and set up bot
 - [Configuration Guide](configuration.md) - How to configure the bot for your project
-- [Deployment Guide](deployment.md) - Step-by-step deployment instructions
+- [Deployment Guide](deployment.md) - Comprehensive production deployment instructions
+- [Maintenance Procedures](maintenance.md) - Ongoing maintenance and operational procedures
 - [Usage Examples](usage.md) - Examples of how to use the bot effectively
 - [Troubleshooting Guide](troubleshooting.md) - Common issues and solutions
 
@@ -15,12 +16,17 @@ This directory contains comprehensive documentation for the GLM-powered GitLab c
 - [Implementation Summary](implementation_summary.md) - Overview of what was built
 - [Architecture Documentation](architecture.md) - Detailed system architecture and component interactions
 - [API Documentation](api.md) - Details about the GitLab and GLM API integrations
+- [Testing Infrastructure](testing_infrastructure.md) - Test suite and CI/CD pipeline documentation
 - [Contributing Guidelines](contributing.md) - How to contribute to the project
 
 ### Project Documentation
+- [Critical Fixes](features/critical-fixes.md) - Comprehensive fixes and improvements implemented
 - [Changelog](changelog.md) - Version history and changes
 - [Roadmap](roadmap.md) - Future development plans
 - [Security Considerations](security.md) - Security implications and best practices
+- **Architecture Decisions**:
+  - [001. GitLab Inline Comments Endpoint Fix](decisions/001-gitlab-inline-comments-endpoint-fix.md)
+  - [002. Line Code Implementation](decisions/002-line-code-implementation.md)
 
 ## Quick Start
 
@@ -88,10 +94,10 @@ Optimization and efficiency analysis:
 
 - Check the [Troubleshooting Guide](troubleshooting.md) for common issues
 - Review the [Usage Examples](usage.md) for practical guidance
+- Refer to the [Deployment Guide](deployment.md) for deployment assistance
+- Check the [Maintenance Procedures](maintenance.md) for operational guidance
 - Refer to the [API Documentation](api.md) for integration details
 - See the [Contributing Guidelines](contributing.md) for development questions
-- Check the [Security Considerations](security.md) for security best practices
-- Review the [Roadmap](roadmap.md) for upcoming features
 - Check the [Security Considerations](security.md) for security best practices
 - Review the [Roadmap](roadmap.md) for upcoming features
 

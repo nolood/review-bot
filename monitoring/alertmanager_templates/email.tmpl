@@ -1,0 +1,778 @@
+{{ define "email.default.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlertManager Notification</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            padding: 20px;
+            color: white;
+            text-align: center;
+        }
+        .header.critical {
+            background-color: #dc3545;
+        }
+        .header.warning {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        .header.info {
+            background-color: #17a2b8;
+        }
+        .header.resolved {
+            background-color: #28a745;
+        }
+        .content {
+            padding: 20px;
+        }
+        .alert {
+            border-left: 4px solid #ddd;
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 0 4px 4px 0;
+        }
+        .alert.critical {
+            border-left-color: #dc3545;
+            background-color: #f8d7da;
+        }
+        .alert.warning {
+            border-left-color: #ffc107;
+            background-color: #fff3cd;
+        }
+        .alert.info {
+            border-left-color: #17a2b8;
+            background-color: #d1ecf1;
+        }
+        .alert h3 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+        .alert p {
+            margin: 5px 0;
+            line-height: 1.4;
+        }
+        .metadata {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .badge {
+            background-color: #6c757d;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .badge.critical {
+            background-color: #dc3545;
+        }
+        .badge.warning {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        .badge.info {
+            background-color: #17a2b8;
+        }
+        .runbook {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+        }
+        .runbook a {
+            color: #007bff;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .runbook a:hover {
+            text-decoration: underline;
+        }
+        .footer {
+            padding: 15px 20px;
+            background-color: #f8f9fa;
+            text-align: center;
+            font-size: 12px;
+            color: #6c757d;
+            border-top: 1px solid #dee2e6;
+        }
+        .summary {
+            background-color: #e9ecef;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header {{ .Status | toLower }}">
+            <h1>{{ .Status | toUpper }} Alert Notification</h1>
+            {{ if eq .Status "firing" }}
+                <p>{{ .Alerts.Firing | len }} alert(s) firing</p>
+            {{ else }}
+                <p>{{ .Alerts.Resolved | len }} alert(s) resolved</p>
+            {{ end }}
+        </div>
+        
+        <div class="content">
+            {{ if gt (len .Alerts.Firing) 0 }}
+                <div class="summary">
+                    <h2>🔥 Firing Alerts</h2>
+                </div>
+                {{ range .Alerts.Firing }}
+                    <div class="alert critical">
+                        <h3>{{ .Annotations.summary }}</h3>
+                        <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+                        <div class="metadata">
+                            <span class="badge {{ .Labels.severity }}">{{ .Labels.severity | toUpper }}</span>
+                            {{ if .Labels.service }}<span class="badge">{{ .Labels.service }}</span>{{ end }}
+                            {{ if .Labels.component }}<span class="badge">{{ .Labels.component }}</span>{{ end }}
+                            {{ if .Labels.instance }}<span class="badge">{{ .Labels.instance }}</span>{{ end }}
+                        </div>
+                        <p><strong>Started:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+                        {{ if .Annotations.runbook_url }}
+                        <div class="runbook">
+                            📚 <strong>Runbook:</strong> <a href="{{ .Annotations.runbook_url }}">View Troubleshooting Guide</a>
+                        </div>
+                        {{ end }}
+                        {{ if .Annotations.troubleshooting }}
+                        <p><strong>Troubleshooting:</strong> {{ .Annotations.troubleshooting }}</p>
+                        {{ end }}
+                    </div>
+                {{ end }}
+            {{ end }}
+            
+            {{ if gt (len .Alerts.Resolved) 0 }}
+                <div class="summary">
+                    <h2>✅ Resolved Alerts</h2>
+                </div>
+                {{ range .Alerts.Resolved }}
+                    <div class="alert">
+                        <h3>{{ .Annotations.summary }}</h3>
+                        <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+                        <div class="metadata">
+                            <span class="badge info">{{ .Labels.severity | toUpper }}</span>
+                            {{ if .Labels.service }}<span class="badge">{{ .Labels.service }}</span>{{ end }}
+                            {{ if .Labels.component }}<span class="badge">{{ .Labels.component }}</span>{{ end }}
+                            {{ if .Labels.instance }}<span class="badge">{{ .Labels.instance }}</span>{{ end }}
+                        </div>
+                        <p><strong>Duration:</strong> {{ .StartsAt.Sub .EndsAt }}</p>
+                        <p><strong>Resolved:</strong> {{ .EndsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+                    </div>
+                {{ end }}
+            {{ end }}
+        </div>
+        
+        <div class="footer">
+            <p>Sent by AlertManager at {{ .Timestamp.Format "2006-01-02 15:04:05 UTC" }}</p>
+            {{ if .ExternalURL }}
+            <p><a href="{{ .ExternalURL }}">View in AlertManager</a></p>
+            {{ end }}
+        </div>
+    </div>
+</body>
+</html>
+{{ end }}
+
+{{ define "email.critical.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚨 CRITICAL ALERT</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(220, 53, 69, 0.2);
+            border: 2px solid #dc3545;
+        }
+        .header {
+            background-color: #dc3545;
+            color: white;
+            padding: 30px;
+            text-align: center;
+            border-radius: 6px 6px 0 0;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 700;
+        }
+        .header .urgent {
+            font-size: 18px;
+            margin-top: 10px;
+            opacity: 0.9;
+        }
+        .content {
+            padding: 25px;
+        }
+        .alert {
+            border-left: 5px solid #dc3545;
+            margin: 20px 0;
+            padding: 20px;
+            background-color: #f8d7da;
+            border-radius: 0 8px 8px 0;
+        }
+        .alert h3 {
+            margin: 0 0 15px 0;
+            color: #721c24;
+            font-size: 20px;
+        }
+        .alert p {
+            margin: 8px 0;
+            line-height: 1.6;
+            color: #721c24;
+        }
+        .action-required {
+            background-color: #721c24;
+            color: white;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+            font-weight: 600;
+        }
+        .runbook {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+        .runbook a {
+            color: #856404;
+            text-decoration: none;
+            font-weight: 700;
+        }
+        .runbook a:hover {
+            text-decoration: underline;
+        }
+        .metadata {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 15px;
+        }
+        .badge {
+            background-color: #dc3545;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .footer {
+            padding: 20px;
+            background-color: #f8f9fa;
+            text-align: center;
+            color: #6c757d;
+            border-top: 1px solid #dee2e6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚨 CRITICAL ALERT</h1>
+            <div class="urgent">Immediate action required</div>
+            <p>{{ .Alerts.Firing | len }} critical alert(s) firing</p>
+        </div>
+        
+        <div class="content">
+            <div class="action-required">
+                ⚠️ CRITICAL INCIDENT - Please investigate immediately
+            </div>
+            
+            {{ range .Alerts.Firing }}
+                <div class="alert">
+                    <h3>{{ .Annotations.summary }}</h3>
+                    <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+                    {{ if .Annotations.troubleshooting }}
+                    <p><strong>Immediate Actions:</strong> {{ .Annotations.troubleshooting }}</p>
+                    {{ end }}
+                    <div class="metadata">
+                        <span class="badge">{{ .Labels.severity | toUpper }}</span>
+                        {{ if .Labels.service }}<span class="badge">{{ .Labels.service }}</span>{{ end }}
+                        {{ if .Labels.component }}<span class="badge">{{ .Labels.component }}</span>{{ end }}
+                        {{ if .Labels.instance }}<span class="badge">{{ .Labels.instance }}</span>{{ end }}
+                    </div>
+                    <p><strong>Started:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+                    
+                    {{ if .Annotations.runbook_url }}
+                    <div class="runbook">
+                        📚 <strong>Runbook:</strong> <a href="{{ .Annotations.runbook_url }}">View Emergency Procedures</a>
+                    </div>
+                    {{ end }}
+                </div>
+            {{ end }}
+        </div>
+        
+        <div class="footer">
+            <p><strong>Sent by AlertManager - CRITICAL INCIDENT</strong></p>
+            {{ if .ExternalURL }}
+            <p><a href="{{ .ExternalURL }}">View Critical Alerts in AlertManager</a></p>
+            {{ end }}
+            <p>{{ .Timestamp.Format "2006-01-02 15:04:05 UTC" }}</p>
+        </div>
+    </div>
+</body>
+</html>
+{{ end }}
+
+{{ define "email.warning.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚠️ Warning Alert</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(255, 193, 7, 0.2);
+            border: 1px solid #ffc107;
+        }
+        .header {
+            background-color: #ffc107;
+            color: #212529;
+            padding: 25px;
+            text-align: center;
+            border-radius: 6px 6px 0 0;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .content {
+            padding: 20px;
+        }
+        .alert {
+            border-left: 4px solid #ffc107;
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #fff3cd;
+            border-radius: 0 6px 6px 0;
+        }
+        .alert h3 {
+            margin: 0 0 10px 0;
+            color: #856404;
+        }
+        .alert p {
+            margin: 6px 0;
+            line-height: 1.5;
+            color: #856404;
+        }
+        .metadata {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .badge {
+            background-color: #ffc107;
+            color: #212529;
+            padding: 3px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .runbook {
+            background-color: #e2e3e5;
+            padding: 12px;
+            border-radius: 4px;
+            margin: 12px 0;
+        }
+        .runbook a {
+            color: #007bff;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .footer {
+            padding: 15px 20px;
+            background-color: #f8f9fa;
+            text-align: center;
+            font-size: 12px;
+            color: #6c757d;
+            border-top: 1px solid #dee2e6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚠️ Warning Alert</h1>
+            <p>{{ .Alerts.Firing | len }} warning alert(s) firing</p>
+        </div>
+        
+        <div class="content">
+            {{ range .Alerts.Firing }}
+                <div class="alert">
+                    <h3>{{ .Annotations.summary }}</h3>
+                    <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+                    {{ if .Annotations.troubleshooting }}
+                    <p><strong>Recommended Actions:</strong> {{ .Annotations.troubleshooting }}</p>
+                    {{ end }}
+                    <div class="metadata">
+                        <span class="badge">{{ .Labels.severity | toUpper }}</span>
+                        {{ if .Labels.service }}<span class="badge">{{ .Labels.service }}</span>{{ end }}
+                        {{ if .Labels.component }}<span class="badge">{{ .Labels.component }}</span>{{ end }}
+                        {{ if .Labels.instance }}<span class="badge">{{ .Labels.instance }}</span>{{ end }}
+                    </div>
+                    <p><strong>Started:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+                    
+                    {{ if .Annotations.runbook_url }}
+                    <div class="runbook">
+                        📚 <strong>Runbook:</strong> <a href="{{ .Annotations.runbook_url }}">View Troubleshooting Guide</a>
+                    </div>
+                    {{ end }}
+                </div>
+            {{ end }}
+        </div>
+        
+        <div class="footer">
+            <p>Sent by AlertManager</p>
+            {{ if .ExternalURL }}
+            <p><a href="{{ .ExternalURL }}">View in AlertManager</a></p>
+            {{ end }}
+            <p>{{ .Timestamp.Format "2006-01-02 15:04:05 UTC" }}</p>
+        </div>
+    </div>
+</body>
+</html>
+{{ end }}
+
+{{ define "email.info.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ℹ️ Information</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 700px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.1);
+        }
+        .header {
+            background-color: #17a2b8;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            border-radius: 8px 8px 0 0;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 22px;
+        }
+        .content {
+            padding: 20px;
+        }
+        .alert {
+            border-left: 4px solid #17a2b8;
+            margin: 10px 0;
+            padding: 12px;
+            background-color: #d1ecf1;
+            border-radius: 0 4px 4px 0;
+        }
+        .alert h3 {
+            margin: 0 0 8px 0;
+            color: #0c5460;
+        }
+        .alert p {
+            margin: 4px 0;
+            line-height: 1.4;
+            color: #0c5460;
+        }
+        .metadata {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+        }
+        .badge {
+            background-color: #17a2b8;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .footer {
+            padding: 15px;
+            background-color: #f8f9fa;
+            text-align: center;
+            font-size: 12px;
+            color: #6c757d;
+            border-top: 1px solid #dee2e6;
+            border-radius: 0 0 8px 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>ℹ️ Information</h1>
+            <p>{{ .Alerts.Firing | len }} informational alert(s)</p>
+        </div>
+        
+        <div class="content">
+            {{ range .Alerts.Firing }}
+                <div class="alert">
+                    <h3>{{ .Annotations.summary }}</h3>
+                    <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+                    <div class="metadata">
+                        <span class="badge">{{ .Labels.severity | toUpper }}</span>
+                        {{ if .Labels.service }}<span class="badge">{{ .Labels.service }}</span>{{ end }}
+                        {{ if .Labels.instance }}<span class="badge">{{ .Labels.instance }}</span>{{ end }}
+                    </div>
+                    <p><strong>Time:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+                </div>
+            {{ end }}
+        </div>
+        
+        <div class="footer">
+            <p>Sent by AlertManager</p>
+            <p>{{ .Timestamp.Format "2006-01-02 15:04:05 UTC" }}</p>
+        </div>
+    </div>
+</body>
+</html>
+{{ end }}
+
+{{ define "email.review-bot.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Review Bot Alert</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 750px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+            border-top: 4px solid #28a745;
+        }
+        .header {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+            padding: 25px;
+            text-align: center;
+            border-radius: 8px 8px 0 0;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .content {
+            padding: 20px;
+        }
+        .alert {
+            margin: 15px 0;
+            padding: 16px;
+            border-radius: 6px;
+            border-left: 4px solid #28a745;
+            background-color: #f8fff9;
+        }
+        .alert h3 {
+            margin: 0 0 12px 0;
+            color: #155724;
+        }
+        .alert p {
+            margin: 6px 0;
+            line-height: 1.5;
+            color: #155724;
+        }
+        .component-tag {
+            display: inline-block;
+            background-color: #28a745;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-right: 8px;
+        }
+        .severity-tag {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-right: 8px;
+        }
+        .severity-tag.critical {
+            background-color: #dc3545;
+            color: white;
+        }
+        .severity-tag.warning {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        .severity-tag.info {
+            background-color: #17a2b8;
+            color: white;
+        }
+        .runbook {
+            background-color: #e9ecef;
+            padding: 12px;
+            border-radius: 4px;
+            margin: 12px 0;
+        }
+        .runbook a {
+            color: #007bff;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .metrics-summary {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+        .metrics-summary h4 {
+            margin: 0 0 10px 0;
+            color: #495057;
+        }
+        .footer {
+            padding: 15px 20px;
+            background-color: #f8f9fa;
+            text-align: center;
+            font-size: 12px;
+            color: #6c757d;
+            border-top: 1px solid #dee2e6;
+        }
+        .bot-icon {
+            font-size: 28px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                <span class="bot-icon">🤖</span>
+                Review Bot Alert
+            </h1>
+            <p>{{ .Alerts.Firing | len }} alert(s) for Review Bot</p>
+        </div>
+        
+        <div class="content">
+            {{ if gt (len .Alerts.Firing) 0 }}
+                <div class="metrics-summary">
+                    <h4>📊 Alert Summary</h4>
+                    <p><strong>Service:</strong> Review Bot</p>
+                    <p><strong>Environment:</strong> {{ index .Alerts.Firing 0 ".Labels" "environment" | default "production" }}</p>
+                    <p><strong>Time:</strong> {{ .Timestamp.Format "2006-01-02 15:04:05 UTC" }}</p>
+                </div>
+                
+                {{ range .Alerts.Firing }}
+                    <div class="alert">
+                        <h3>{{ .Annotations.summary }}</h3>
+                        <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+                        
+                        <div style="margin: 10px 0;">
+                            {{ if .Labels.component }}
+                                <span class="component-tag">{{ .Labels.component }}</span>
+                            {{ end }}
+                            <span class="severity-tag {{ .Labels.severity }}">{{ .Labels.severity | toUpper }}</span>
+                            {{ if .Labels.instance }}
+                                <span class="component-tag">{{ .Labels.instance }}</span>
+                            {{ end }}
+                        </div>
+                        
+                        {{ if .Annotations.troubleshooting }}
+                        <p><strong>🔧 Actions:</strong> {{ .Annotations.troubleshooting }}</p>
+                        {{ end }}
+                        
+                        <p><strong>⏰ Started:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+                        
+                        {{ if .Annotations.runbook_url }}
+                        <div class="runbook">
+                            📚 <strong>Runbook:</strong> <a href="{{ .Annotations.runbook_url }}">View Troubleshooting Guide</a>
+                        </div>
+                        {{ end }}
+                    </div>
+                {{ end }}
+            {{ end }}
+            
+            {{ if gt (len .Alerts.Resolved) 0 }}
+                <div class="metrics-summary" style="background-color: #d4edda; border-color: #c3e6cb;">
+                    <h4>✅ Resolved Alerts</h4>
+                    {{ range .Alerts.Resolved }}
+                        <p><strong>{{ .Annotations.summary }}</strong> - Resolved after {{ .StartsAt.Sub .EndsAt }}</p>
+                    {{ end }}
+                </div>
+            {{ end }}
+        </div>
+        
+        <div class="footer">
+            <p>Sent by Review Bot Monitoring</p>
+            {{ if .ExternalURL }}
+            <p><a href="{{ .ExternalURL }}">View in AlertManager</a></p>
+            {{ end }}
+        </div>
+    </div>
+</body>
+</html>
+{{ end }}

@@ -1,0 +1,307 @@
+# AlertManager Configuration
+global:
+  smtp_smarthost: '${SMTP_HOST:-localhost:587}'
+  smtp_from: '${SMTP_FROM:-alertmanager@example.com}'
+  smtp_auth_username: '${SMTP_USER}'
+  smtp_auth_password: '${SMTP_PASSWORD}'
+  smtp_require_tls: true
+  
+  # Global slack configuration
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+# Templates configuration
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Route configuration with proper grouping and inhibition
+route:
+  # Group alerts by these labels for better organization
+  group_by: ['alertname', 'cluster', 'service', 'severity', 'component']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 30m
+  receiver: 'default-receiver'
+  
+  # Define routes for different alert types
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 5s
+      group_interval: 5m
+      repeat_interval: 10m
+      routes:
+        # Monitoring stack critical alerts
+        - match:
+            service: monitoring
+          receiver: 'monitoring-critical-alerts'
+          continue: true
+        # Review Bot critical alerts  
+        - match:
+            service: review-bot
+          receiver: 'review-bot-critical-alerts'
+          continue: true
+        # System critical alerts
+        - match:
+            service: system
+          receiver: 'system-critical-alerts'
+          continue: true
+    
+    # Warning alerts - less urgent
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+      group_wait: 30s
+      group_interval: 10m
+      repeat_interval: 30m
+      routes:
+        # Review Bot warnings
+        - match:
+            service: review-bot
+          receiver: 'review-bot-warning-alerts'
+          continue: true
+        # System warnings
+        - match:
+            service: system
+          receiver: 'system-warning-alerts'
+          continue: true
+    
+    # Info alerts - informational only
+    - match:
+        severity: info
+      receiver: 'info-alerts'
+      group_wait: 60s
+      group_interval: 1h
+      repeat_interval: 24h
+    
+    # Review Bot specific routing
+    - match:
+        service: review-bot
+      receiver: 'review-bot-alerts'
+      routes:
+        # API-related alerts
+        - match:
+            component: glm-api
+          receiver: 'review-bot-api-alerts'
+          continue: true
+        - match:
+            component: gitlab-api
+          receiver: 'review-bot-api-alerts'
+          continue: true
+        # Resource usage alerts
+        - match:
+            component: resources
+          receiver: 'review-bot-resource-alerts'
+          continue: true
+        # Token usage alerts
+        - match:
+            component: tokens
+          receiver: 'review-bot-token-alerts'
+          continue: true
+
+# Receivers configuration with multiple notification channels
+receivers:
+  # Default receiver for unmatched alerts
+  - name: 'default-receiver'
+    email_configs:
+      - to: '${DEFAULT_EMAIL:-admin@example.com}'
+        require_tls: true
+        send_resolved: true
+    
+  # Critical alerts receiver - all channels
+  - name: 'critical-alerts'
+    email_configs:
+      - to: '${CRITICAL_EMAIL:-admin@example.com,support@example.com}'
+        require_tls: true
+        send_resolved: true
+    
+    # Slack integration for critical alerts
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#alerts-critical'
+        title: '🚨 Critical Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          *Service:* {{ .Labels.service }}
+          *Instance:* {{ .Labels.instance }}
+          *Runbook:* {{ .Annotations.runbook_url }}
+          {{ end }}
+        send_resolved: true
+        color: 'danger'
+    
+    # Webhook for Teams/PagerDuty integration
+    webhook_configs:
+      - url: '${WEBHOOK_URL:-http://teams-webhook:80}'
+        send_resolved: true
+        http_config:
+          basic_auth:
+            username: '${WEBHOOK_USER}'
+            password: '${WEBHOOK_PASSWORD}'
+  
+  # Warning alerts receiver
+  - name: 'warning-alerts'
+    email_configs:
+      - to: '${WARNING_EMAIL:-dev-team@example.com}'
+        require_tls: true
+        send_resolved: true
+    
+    # Slack integration for warnings
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#alerts-warning'
+        title: '⚠️ Warning: {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          *Service:* {{ .Labels.service }}
+          {{ end }}
+        send_resolved: true
+        color: 'warning'
+  
+  # Info alerts receiver
+  - name: 'info-alerts'
+    email_configs:
+      - to: '${INFO_EMAIL:-dev-team@example.com}'
+        require_tls: true
+        send_resolved: true
+  
+  # Review Bot specific receivers
+  - name: 'review-bot-alerts'
+    email_configs:
+      - to: '${REVIEW_BOT_EMAIL:-review-bot-team@example.com}'
+        require_tls: true
+        send_resolved: true
+    
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#review-bot-alerts'
+        title: '🤖 Review Bot: {{ .GroupLabels.alertname }}'
+        send_resolved: true
+        color: 'good'
+  
+  - name: 'review-bot-critical-alerts'
+    email_configs:
+      - to: '${REVIEW_BOT_CRITICAL_EMAIL:-review-bot-team@example.com,admin@example.com}'
+        require_tls: true
+        send_resolved: true
+    
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#review-bot-critical'
+        title: '🚨 CRITICAL Review Bot: {{ .GroupLabels.alertname }}'
+        send_resolved: true
+        color: 'danger'
+  
+  - name: 'review-bot-warning-alerts'
+    email_configs:
+      - to: '${REVIEW_BOT_WARNING_EMAIL:-review-bot-team@example.com}'
+        require_tls: true
+        send_resolved: true
+  
+  - name: 'review-bot-api-alerts'
+    email_configs:
+      - to: '${REVIEW_BOT_API_EMAIL:-api-team@example.com}'
+        require_tls: true
+        send_resolved: true
+  
+  - name: 'review-bot-resource-alerts'
+    email_configs:
+      - to: '${REVIEW_BOT_RESOURCE_EMAIL:-infra-team@example.com}'
+        require_tls: true
+        send_resolved: true
+  
+  - name: 'review-bot-token-alerts'
+    email_configs:
+      - to: '${REVIEW_BOT_TOKEN_EMAIL:-review-bot-team@example.com,billing@example.com}'
+        require_tls: true
+        send_resolved: true
+  
+  # Monitoring specific receivers
+  - name: 'monitoring-critical-alerts'
+    email_configs:
+      - to: '${MONITORING_CRITICAL_EMAIL:-infra-team@example.com,admin@example.com}'
+        require_tls: true
+        send_resolved: true
+    
+    webhook_configs:
+      - url: '${MONITORING_WEBHOOK_URL:-http://pagerduty-webhook:80}'
+        send_resolved: true
+  
+  # System specific receivers
+  - name: 'system-critical-alerts'
+    email_configs:
+      - to: '${SYSTEM_CRITICAL_EMAIL:-infra-team@example.com,admin@example.com}'
+        require_tls: true
+        send_resolved: true
+    
+    webhook_configs:
+      - url: '${SYSTEM_WEBHOOK_URL:-http://pagerduty-webhook:80}'
+        send_resolved: true
+  
+  - name: 'system-warning-alerts'
+    email_configs:
+      - to: '${SYSTEM_WARNING_EMAIL:-infra-team@example.com}'
+        require_tls: true
+        send_resolved: true
+
+# Inhibition rules to prevent alert spam and logical dependencies
+inhibit_rules:
+  # If a critical alert is firing, inhibit warning alerts for the same service
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service', 'instance']
+  
+  # If Review Bot is down, inhibit all other Review Bot alerts
+  - source_match:
+      alertname: 'ReviewBotDown'
+    target_match:
+      service: 'review-bot'
+    equal: ['instance']
+  
+  # If system is critically low on memory, inhibit application memory alerts
+  - source_match:
+      alertname: 'CriticalMemoryUsage'
+      service: 'system'
+    target_match:
+      service: 'review-bot'
+      alertname: 'ReviewBotHighMemoryUsage'
+    equal: ['instance']
+  
+  # If system is critically high on CPU, inhibit application CPU alerts
+  - source_match:
+      alertname: 'CriticalCPUUsage'
+      service: 'system'
+    target_match:
+      service: 'review-bot'
+      alertname: 'ReviewBotHighCPUUsage'
+    equal: ['instance']
+  
+  # If GitLab API rate limit is exceeded, inhibit slow GitLab API alerts
+  - source_match:
+      alertname: 'ReviewBotGitLabRateLimitExceeded'
+    target_match:
+      component: 'gitlab-api'
+      alertname: 'ReviewBotSlowGitLabAPI'
+    equal: ['instance']
+  
+  # If container is down, inhibit container restart alerts
+  - source_match:
+      alertname: 'ContainerDown'
+    target_match:
+      alertname: 'ContainerRestarting'
+    equal: ['instance', 'name']
+  
+  # If monitoring stack is down, inhibit alerts about monitoring configuration
+  - source_match:
+      service: 'monitoring'
+      severity: 'critical'
+    target_match:
+      service: 'monitoring'
+      severity: 'warning'
+    equal: ['instance']
