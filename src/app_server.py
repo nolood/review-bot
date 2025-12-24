@@ -383,10 +383,11 @@ class AppServer:
                 self.settings,
                 concurrent_limit=self.config.max_concurrent_reviews
             )
-            
-            # Setup signal handlers for graceful shutdown
-            self._setup_signal_handlers()
-            
+
+            # DO NOT setup signal handlers here - let review_bot_server.py handle them
+            # to avoid signal handler conflicts during shutdown
+            # self._setup_signal_handlers()
+
             self.logger.info("Application startup completed")
             
         except Exception as e:
@@ -1281,7 +1282,14 @@ class AppServer:
         """Delay shutdown to allow response to be sent."""
         await asyncio.sleep(0.1)
         self.shutdown_event.set()
-    
+
+    async def shutdown(self) -> None:
+        """Trigger graceful shutdown of uvicorn server."""
+        if hasattr(self, 'server') and self.server:
+            self.logger.info("Triggering server shutdown")
+            self.server.should_exit = True
+            await self.server.shutdown()
+
     async def start_server(self) -> None:
         """Start application server."""
         if not FASTAPI_AVAILABLE:
@@ -1297,8 +1305,9 @@ class AppServer:
                 workers=self.config.workers if not self.config.reload else 1,
                 reload=self.config.reload
             )
-            
-            server = uvicorn.Server(config)
+
+            # Store as instance variable for graceful shutdown
+            self.server = uvicorn.Server(config)
             
             self.logger.info(
                 "Starting application server",
@@ -1310,8 +1319,8 @@ class AppServer:
                     "monitoring_port": self.config.monitoring_port if self.config.enable_monitoring else None
                 }
             )
-            
-            await server.serve()
+
+            await self.server.serve()
             
         except Exception as e:
             self.logger.error(

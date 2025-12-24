@@ -506,7 +506,14 @@ class MonitoringServer:
             self.logger.info("Stopping monitoring server")
             self.server.should_exit = True
             await self.server.shutdown()
-    
+
+    async def shutdown(self) -> None:
+        """Trigger graceful shutdown of uvicorn server (alias for stop_server)."""
+        if self.server:
+            self.logger.info("Triggering monitoring server shutdown")
+            self.server.should_exit = True
+            await self.server.shutdown()
+
     def run(self) -> None:
         """Run the monitoring server synchronously."""
         try:

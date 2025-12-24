@@ -31,6 +31,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 from dataclasses import dataclass, field
 from enum import Enum
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add src to path for imports
 src_path = Path(__file__).parent / "src"
@@ -195,15 +199,15 @@ def create_environment_config(environment: Environment) -> Any:
         
         base_config = {
             # Server configuration
-            "server_host": "0.0.0.0",
-            "server_port": 8000,
+            "server_host": os.getenv("SERVER_HOST", "0.0.0.0"),
+            "server_port": int(os.getenv("SERVER_PORT", "8000")),
             "enable_cors": environment != Environment.PRODUCTION,
             "cors_origins": ["*"] if environment == Environment.DEVELOPMENT else [],
-            
+
             # Monitoring configuration
             "monitoring_enabled": True,
-            "monitoring_port": 8080,
-            "monitoring_host": "0.0.0.0",
+            "monitoring_port": int(os.getenv("MONITORING_PORT", "8080")),
+            "monitoring_host": os.getenv("MONITORING_HOST", "0.0.0.0"),
             
             # Performance configuration
             "max_concurrent_reviews": 1 if environment == Environment.DEVELOPMENT else 3,
@@ -353,17 +357,17 @@ def start_server(
         help="Deployment environment"
     ),
     host: str = typer.Option(
-        "0.0.0.0",
+        os.getenv("SERVER_HOST", "0.0.0.0"),
         "--host",
         help="Server host address"
     ),
     port: int = typer.Option(
-        8000,
+        int(os.getenv("SERVER_PORT", "8000")),
         "--port", "-p",
         help="Server port"
     ),
     monitoring_port: int = typer.Option(
-        8080,
+        int(os.getenv("MONITORING_PORT", "8080")),
         "--monitoring-port",
         help="Monitoring server port"
     ),
@@ -500,38 +504,76 @@ def start_server(
             
             console.print(f"[blue]Starting application server on port {port}...[/blue]")
             tasks.append(asyncio.create_task(app_server.start_server()))
-            
-            # Wait for tasks with graceful shutdown
+
+            # Startup phase with spinner
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 console=console
             ) as progress:
-                task_progress = progress.add_task("Server running...", total=None)
-                
-                # Monitor for shutdown
-                while not app_state["shutdown_requested"]:
-                    await asyncio.sleep(1)
-                    
-                    # Check if any task failed
-                    for i, task in enumerate(tasks):
-                        if task.done() and task.exception():
-                            console.print(f"[red]Server task failed: {task.exception()}[/red]")
-                            app_state["shutdown_requested"] = True
-                            break
-                
-                progress.update(task_progress, description="Shutting down...")
-            
-            # Graceful shutdown
-            console.print("[yellow]Initiating graceful shutdown...[/yellow]")
-            
-            # Cancel tasks
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            
-            # Wait for cancellation
-            await asyncio.gather(*tasks, return_exceptions=True)
+                task_progress = progress.add_task("Starting servers...", total=None)
+                await asyncio.sleep(2)  # Give time for servers to start
+
+            # Display server status
+            console.print(f"[green]✅ Server running on http://{host}:{port}[/green]")
+            if monitoring_server:
+                console.print(f"[green]✅ Monitoring running on http://0.0.0.0:{monitoring_port}[/green]")
+            console.print("[dim]Press Ctrl+C to stop[/dim]")
+
+            # Monitor for shutdown (no spinner - silent monitoring)
+            while not app_state["shutdown_requested"]:
+                await asyncio.sleep(1)
+
+                # Check if any task failed
+                for i, task in enumerate(tasks):
+                    if task.done() and task.exception():
+                        console.print(f"[red]Server task failed: {task.exception()}[/red]")
+                        app_state["shutdown_requested"] = True
+                        break
+
+            # Shutdown phase with spinner
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task_progress = progress.add_task("Shutting down servers...", total=None)
+
+                # Graceful shutdown
+                SHUTDOWN_TIMEOUT = 5.0
+                logger = app_state.get("logger")
+
+                if app_server:
+                    try:
+                        await asyncio.wait_for(app_server.shutdown(), timeout=SHUTDOWN_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        if logger:
+                            logger.warning("App server shutdown timed out")
+                        console.print("[yellow]Warning: App server shutdown timed out[/yellow]")
+                    except Exception as e:
+                        if logger:
+                            logger.error(f"App server shutdown failed: {e}")
+                        console.print(f"[yellow]Warning: App server shutdown failed: {e}[/yellow]")
+
+                if monitoring_server:
+                    try:
+                        await asyncio.wait_for(monitoring_server.shutdown(), timeout=SHUTDOWN_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        if logger:
+                            logger.warning("Monitoring server shutdown timed out")
+                        console.print("[yellow]Warning: Monitoring server shutdown timed out[/yellow]")
+                    except Exception as e:
+                        if logger:
+                            logger.error(f"Monitoring server shutdown failed: {e}")
+                        console.print(f"[yellow]Warning: Monitoring server shutdown failed: {e}[/yellow]")
+
+                # Cancel tasks
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+
+                # Wait for cancellation
+                await asyncio.gather(*tasks, return_exceptions=True)
             
             console.print("[green]✅ Server shutdown complete[/green]")
             return 0

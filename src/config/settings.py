@@ -107,6 +107,17 @@ class Settings:
     webhook_excluded_labels: List[str] = field(default_factory=lambda: os.getenv("WEBHOOK_EXCLUDED_LABELS", "").split(",") if os.getenv("WEBHOOK_EXCLUDED_LABELS") else [])
     webhook_trigger_actions: List[str] = field(default_factory=lambda: os.getenv("WEBHOOK_TRIGGER_ACTIONS", "open,update,reopen").split(",") if os.getenv("WEBHOOK_TRIGGER_ACTIONS") else ["open", "update", "reopen"])
 
+    # Server Configuration
+    server_host: str = field(default_factory=lambda: os.getenv("SERVER_HOST", "0.0.0.0"))
+    server_port: int = field(default_factory=lambda: int(os.getenv("SERVER_PORT", "8000")))
+    monitoring_port: int = field(default_factory=lambda: int(os.getenv("MONITORING_PORT", "8080")))
+    monitoring_host: str = field(default_factory=lambda: os.getenv("MONITORING_HOST", "0.0.0.0"))
+    monitoring_enabled: bool = field(default_factory=lambda: os.getenv("MONITORING_ENABLED", "true").lower() in ("true", "1", "yes", "on"))
+    enable_cors: bool = field(default_factory=lambda: os.getenv("ENABLE_CORS", "true").lower() in ("true", "1", "yes", "on"))
+    cors_origins: List[str] = field(default_factory=lambda: os.getenv("CORS_ORIGINS", "*").split(",") if os.getenv("CORS_ORIGINS") else ["*"])
+    max_concurrent_reviews: int = field(default_factory=lambda: int(os.getenv("MAX_CONCURRENT_REVIEWS", "3")))
+    review_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("REVIEW_TIMEOUT_SECONDS", "300")))
+
     # Deduplication Configuration
     deduplication_strategy: str = field(default_factory=lambda: os.getenv("DEDUPLICATION_STRATEGY", "content_hash"))
     deduplication_enabled: bool = field(default_factory=lambda: os.getenv("DEDUPLICATION_ENABLED", "true").lower() in ("true", "1", "yes", "on"))
