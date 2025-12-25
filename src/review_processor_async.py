@@ -93,26 +93,32 @@ class AsyncReviewProcessor:
             
             if not dry_run:
                 self.logger.info("Publishing comments to GitLab")
-                
+
                 # Publish summary comment if available
                 summary_comment = getattr(comment_batch, 'summary_comment', None)
                 if summary_comment:
-                    await comment_publisher.async_publish_review_summary(
+                    # Run sync method in thread pool
+                    await asyncio.to_thread(
+                        comment_publisher.publish_review_summary,
                         summary_comment,
-                        context.mr_details
+                        context.mr_details,
+                        context.project_id,
+                        context.mr_iid
                     )
-                
+
                 # Publish file comments concurrently
                 file_comments = getattr(comment_batch, 'file_comments', [])
                 inline_comments = getattr(comment_batch, 'inline_comments', [])
                 all_file_comments = file_comments + inline_comments
-                
+
                 if all_file_comments:
-                    # Publish comments concurrently with rate limiting
-                    await comment_publisher.async_publish_file_comments(
+                    # Publish comments with rate limiting (run sync method in thread pool)
+                    await asyncio.to_thread(
+                        comment_publisher.publish_file_comments,
                         all_file_comments,
                         context.mr_details,
-                        concurrent_limit=self.concurrent_limit
+                        context.project_id,
+                        context.mr_iid
                     )
                 
                 # Update stats
@@ -132,7 +138,15 @@ class AsyncReviewProcessor:
                 )
                 
         except Exception as e:
-            self.logger.error(f"Failed to publish comments: {e}")
+            self.logger.error(
+                "Failed to publish comments",
+                extra={
+                    "project_id": context.project_id,
+                    "mr_iid": context.mr_iid,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                }
+            )
             raise CommentPublishError(f"Failed to publish comments: {e}") from e
     
     async def process_merge_request(
@@ -140,29 +154,33 @@ class AsyncReviewProcessor:
         dry_run: bool = False,
         review_type: ReviewType = ReviewType.GENERAL,
         custom_prompt: Optional[str] = None,
-        max_chunks: Optional[int] = None
+        max_chunks: Optional[int] = None,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Async process a single merge request end-to-end.
-        
+
         Args:
             dry_run: Skip actual comment publishing
             review_type: Type of review to perform
             custom_prompt: Custom prompt instructions
             max_chunks: Maximum number of chunks to process
-            
+            project_id: Optional project ID to override settings
+            mr_iid: Optional MR IID to override settings
+
         Returns:
             Dictionary with processing results and statistics
-            
+
         Raises:
             ReviewBotError: If processing fails
         """
         start_time = time.time()
-        
+
         # Initialize context
         context = ReviewContext(
-            project_id=getattr(self.settings, 'project_id', ''),
-            mr_iid=getattr(self.settings, 'mr_iid', '')
+            project_id=project_id or getattr(self.settings, 'project_id', ''),
+            mr_iid=mr_iid or getattr(self.settings, 'mr_iid', '')
         )
         
         try:
@@ -190,8 +208,14 @@ class AsyncReviewProcessor:
                     
                     # Fetch MR data concurrently
                     self.logger.info("Fetching merge request details and raw diffs concurrently")
-                    mr_details_task = gitlab_client.get_merge_request_details()
-                    raw_diffs_task = gitlab_client.get_merge_request_diffs_raw()
+                    mr_details_task = gitlab_client.get_merge_request_details(
+                        project_id=context.project_id,
+                        mr_iid=context.mr_iid
+                    )
+                    raw_diffs_task = gitlab_client.get_merge_request_diffs_raw(
+                        project_id=context.project_id,
+                        mr_iid=context.mr_iid
+                    )
 
                     # Wait for both tasks to complete
                     context.mr_details, raw_diffs = await asyncio.gather(
@@ -278,10 +302,12 @@ class AsyncReviewProcessor:
         except Exception as e:
             processing_time = time.time() - start_time
             error_msg = f"Async MR review processing failed: {str(e)}"
-            
+
             self.logger.error(
                 error_msg,
                 extra={
+                    "project_id": context.project_id,
+                    "mr_iid": context.mr_iid,
                     "processing_time": processing_time,
                     "error_type": type(e).__name__,
                     "error_details": str(e)
@@ -327,35 +353,36 @@ class AsyncReviewProcessor:
         
         async def process_single_mr(mr_data: Dict[str, str]) -> Dict[str, Any]:
             async with semaphore:
+                mr_project_id = mr_data.get('project_id', '')
+                mr_iid = mr_data.get('mr_iid', '')
                 try:
-                    # Update settings for this MR
-                    original_project_id = getattr(self.settings, 'project_id', '')
-                    original_mr_iid = getattr(self.settings, 'mr_iid', '')
-                    
-                    setattr(self.settings, 'project_id', mr_data.get('project_id', ''))
-                    setattr(self.settings, 'mr_iid', mr_data.get('mr_iid', ''))
-                    
+                    # Pass project_id and mr_iid explicitly (no settings mutation)
                     result = await self.process_merge_request(
-                        dry_run, review_type, custom_prompt, max_chunks
+                        dry_run=dry_run,
+                        review_type=review_type,
+                        custom_prompt=custom_prompt,
+                        max_chunks=max_chunks,
+                        project_id=mr_project_id,
+                        mr_iid=mr_iid
                     )
-                    
-                    # Restore original settings
-                    setattr(self.settings, 'project_id', original_project_id)
-                    setattr(self.settings, 'mr_iid', original_mr_iid)
-                    
+
                     return {
                         "mr_data": mr_data,
                         "result": result,
                         "success": True
                     }
-                    
+
                 except Exception as e:
-                    self.logger.error(f"Failed to process MR {mr_data}: {e}")
-                    
-                    # Restore original settings
-                    setattr(self.settings, 'project_id', original_project_id)
-                    setattr(self.settings, 'mr_iid', original_mr_iid)
-                    
+                    self.logger.error(
+                        "Failed to process MR",
+                        extra={
+                            "project_id": mr_project_id,
+                            "mr_iid": mr_iid,
+                            "error_type": type(e).__name__,
+                            "error_message": str(e)
+                        }
+                    )
+
                     return {
                         "mr_data": mr_data,
                         "error": str(e),
@@ -401,9 +428,11 @@ class ReviewProcessor(AsyncReviewProcessor):
         dry_run: bool = False,
         review_type: ReviewType = ReviewType.GENERAL,
         custom_prompt: Optional[str] = None,
-        max_chunks: Optional[int] = None
+        max_chunks: Optional[int] = None,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
     ) -> Dict[str, Any]:
         """Synchronous wrapper for async method."""
         return asyncio.run(super().process_merge_request(
-            dry_run, review_type, custom_prompt, max_chunks
+            dry_run, review_type, custom_prompt, max_chunks, project_id, mr_iid
         ))

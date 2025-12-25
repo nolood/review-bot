@@ -161,31 +161,39 @@ class CommentPublisher:
     def publish_review_summary(
         self,
         summary: str,
-        mr_details: Optional[Dict[str, Any]] = None
+        mr_details: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Publish overall MR summary comment.
-        
+
         Args:
             summary: Summary text to publish
             mr_details: Optional MR details for context
-            
+            project_id: Optional project ID for GitLab API
+            mr_iid: Optional MR IID for GitLab API
+
         Returns:
             GitLab API response for the created comment
-            
+
         Raises:
             CommentPublisherError: If publishing fails
         """
         try:
             # Format summary with proper structure
             formatted_summary = self._format_summary_comment(summary, mr_details)
-            
+
             # Apply rate limiting
             self._apply_rate_limit()
-            
+
             # Publish the summary
-            response = self.gitlab_client.post_comment(formatted_summary)
-            
+            response = self.gitlab_client.post_comment(
+                formatted_summary,
+                project_id=project_id,
+                mr_iid=mr_iid
+            )
+
             self.logger.info(
                 "Published review summary",
                 extra={
@@ -193,9 +201,9 @@ class CommentPublisher:
                     "summary_length": len(formatted_summary)
                 }
             )
-            
+
             return response
-            
+
         except Exception as e:
             self.logger.error(f"Failed to publish review summary: {e}")
             raise CommentPublishError(f"Summary publishing failed: {e}")
@@ -203,44 +211,49 @@ class CommentPublisher:
     def publish_file_comments(
         self,
         comments: List[FormattedComment],
-        mr_details: Optional[Dict[str, Any]] = None
+        mr_details: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Publish file-specific comments.
-        
+
         Args:
             comments: List of formatted comments to publish
             mr_details: Optional MR details for inline comments
-            
+            project_id: Optional project ID for GitLab API
+            mr_iid: Optional MR IID for GitLab API
+
         Returns:
             List of GitLab API responses for published comments
-            
+
         Raises:
             CommentPublisherError: If publishing fails
         """
         if not comments:
             return []
-        
+
         try:
             responses = []
-            
+
             # Group comments by file for batching
             file_groups = self._group_comments_by_file(comments)
-            
+
             for file_path, file_comments in file_groups.items():
                 # Publish each comment with rate limiting
                 for comment in file_comments:
                     formatted_comment = self._format_file_comment(comment)
-                    
+
                     # Apply rate limiting
                     self._apply_rate_limit()
-                    
+
                     # Publish the comment
                     if comment.line_number and mr_details:
                         # Inline comment - try with fallback
                         try:
                             response = self._publish_inline_comment(
-                                comment, mr_details, formatted_comment
+                                comment, mr_details, formatted_comment,
+                                project_id=project_id, mr_iid=mr_iid
                             )
                         except Exception as e:
                             # Check if this is a line_code/position error from GitLab
@@ -271,16 +284,24 @@ class CommentPublisher:
                                 )
                                 # Post as general comment instead
                                 fallback_comment = f"{formatted_comment}\n\n---\n*Note: This comment was intended for `{comment.file_path}:{comment.line_number}`, but GitLab rejected the inline position.*"
-                                response = self.gitlab_client.post_comment(fallback_comment)
+                                response = self.gitlab_client.post_comment(
+                                    fallback_comment,
+                                    project_id=project_id,
+                                    mr_iid=mr_iid
+                                )
                             else:
                                 # Re-raise if it's a different error
                                 raise
                     else:
                         # General file comment
-                        response = self.gitlab_client.post_comment(formatted_comment)
+                        response = self.gitlab_client.post_comment(
+                            formatted_comment,
+                            project_id=project_id,
+                            mr_iid=mr_iid
+                        )
 
                     responses.append(response)
-            
+
             self.logger.info(
                 "Published file comments",
                 extra={
@@ -289,9 +310,9 @@ class CommentPublisher:
                     "published_count": len(responses)
                 }
             )
-            
+
             return responses
-            
+
         except Exception as e:
             self.logger.error(f"Failed to publish file comments: {e}")
             raise CommentPublishError(f"File comment publishing failed: {e}")
@@ -490,7 +511,9 @@ class CommentPublisher:
         self,
         comment: FormattedComment,
         mr_details: Dict[str, Any],
-        formatted_comment: str
+        formatted_comment: str,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Publish an inline comment to a specific line.
@@ -499,6 +522,8 @@ class CommentPublisher:
             comment: Formatted comment data
             mr_details: MR details with SHA information
             formatted_comment: Formatted comment text
+            project_id: Optional project ID for GitLab API
+            mr_iid: Optional MR IID for GitLab API
 
         Returns:
             GitLab API response
@@ -536,7 +561,11 @@ class CommentPublisher:
 
                 # Add file/line reference to comment
                 fallback_comment = f"{formatted_comment}\n\n---\n*Note: This comment was intended for `{comment.file_path}:{comment.line_number}`, but that line is not part of the diff.*"
-                return self.gitlab_client.post_comment(fallback_comment)
+                return self.gitlab_client.post_comment(
+                    fallback_comment,
+                    project_id=project_id,
+                    mr_iid=mr_iid
+                )
 
             # Get detailed line info including old_line and line_code
             line_info = self.line_position_validator.get_line_info(
@@ -572,9 +601,13 @@ class CommentPublisher:
                 }
             )
             fallback_comment = f"{formatted_comment}\n\n---\n*Note: This comment was intended for `{comment.file_path}:{comment.line_number}`*"
-            return self.gitlab_client.post_comment(fallback_comment)
+            return self.gitlab_client.post_comment(
+                fallback_comment,
+                project_id=project_id,
+                mr_iid=mr_iid
+            )
 
-        # Post inline comment with old_line and line_code
+        # Post inline comment
         return self.gitlab_client.post_inline_comment(
             body=formatted_comment,
             file_path=comment.file_path,
@@ -582,8 +615,8 @@ class CommentPublisher:
             base_sha=base_sha,
             start_sha=start_sha,
             head_sha=head_sha,
-            old_line=old_line,
-            line_code=line_code
+            project_id=project_id,
+            mr_iid=mr_iid
         )
     
     def _apply_rate_limit(self):
@@ -598,14 +631,22 @@ class CommentPublisher:
         
         self.last_comment_time = time.time()
     
-    def publish_comment_batch(self, batch: CommentBatch, mr_details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def publish_comment_batch(
+        self,
+        batch: CommentBatch,
+        mr_details: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Publish a complete batch of comments.
-        
+
         Args:
             batch: CommentBatch to publish
             mr_details: Optional MR details for inline comments
-            
+            project_id: Optional project ID for GitLab API
+            mr_iid: Optional MR IID for GitLab API
+
         Returns:
             Summary of published comments
         """
@@ -616,29 +657,39 @@ class CommentPublisher:
             "total_comments": 0,
             "errors": []
         }
-        
+
         try:
             # Publish summary comment
             if batch.summary_comment:
-                self.publish_review_summary(batch.summary_comment, mr_details)
+                self.publish_review_summary(
+                    batch.summary_comment,
+                    mr_details,
+                    project_id=project_id,
+                    mr_iid=mr_iid
+                )
                 results["summary_published"] = True
-            
+
             # Publish file comments
             all_file_comments = batch.file_comments + batch.inline_comments
             if all_file_comments:
-                responses = self.publish_file_comments(all_file_comments, mr_details)
+                responses = self.publish_file_comments(
+                    all_file_comments,
+                    mr_details,
+                    project_id=project_id,
+                    mr_iid=mr_iid
+                )
                 results["file_comments_published"] = len(batch.file_comments)
                 results["inline_comments_published"] = len(batch.inline_comments)
                 results["total_comments"] = len(responses)
-            
+
             self.logger.info(
                 "Comment batch publication completed",
                 extra=results
             )
-            
+
         except Exception as e:
             error_msg = f"Failed to publish comment batch: {e}"
             self.logger.error(error_msg)
             results["errors"].append(error_msg)
-        
+
         return results

@@ -125,17 +125,27 @@ class GitLabClient(AsyncGitLabClient):
         super().__init__(timeout, limits)
         self.logger = get_logger("gitlab_client")
 
-    async def async_get_merge_request_diff(self) -> str:
+    async def async_get_merge_request_diff(
+        self,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
+    ) -> str:
         """
         Async fetch the merge request diff from GitLab API.
-        
+
+        Args:
+            project_id: Project ID (uses default if not provided)
+            mr_iid: MR IID (uses default if not provided)
+
         Returns:
             Formatted diff string for analysis
-            
+
         Raises:
             GitLabAPIError: If diff retrieval fails
         """
-        url = f"{self.api_url}/projects/{self.project_id}/merge_requests/{self.mr_iid}/diffs"
+        pid = project_id or self.project_id
+        iid = mr_iid or self.mr_iid
+        url = f"{self.api_url}/projects/{pid}/merge_requests/{iid}/diffs"
         
         try:
             self.logger.debug(f"Fetching MR diff from {url}")
@@ -184,9 +194,17 @@ class GitLabClient(AsyncGitLabClient):
             )
             raise GitLabAPIError(error_msg)
 
-    async def async_get_merge_request_diffs_raw(self) -> list[dict[str, Any]]:
+    async def async_get_merge_request_diffs_raw(
+        self,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
+    ) -> list[dict[str, Any]]:
         """
         Async fetch raw merge request diffs from GitLab API.
+
+        Args:
+            project_id: Project ID (uses default if not provided)
+            mr_iid: MR IID (uses default if not provided)
 
         Returns:
             List of raw diff objects from GitLab API
@@ -194,7 +212,9 @@ class GitLabClient(AsyncGitLabClient):
         Raises:
             GitLabAPIError: If diff retrieval fails
         """
-        url = f"{self.api_url}/projects/{self.project_id}/merge_requests/{self.mr_iid}/diffs"
+        pid = project_id or self.project_id
+        iid = mr_iid or self.mr_iid
+        url = f"{self.api_url}/projects/{pid}/merge_requests/{iid}/diffs"
 
         try:
             self.logger.debug(f"Fetching raw MR diffs from {url}")
@@ -250,14 +270,38 @@ class GitLabClient(AsyncGitLabClient):
             raise GitLabAPIError(error_msg)
 
     @api_retry
-    def get_merge_request_diff(self) -> str:
-        """Synchronous wrapper for backward compatibility."""
-        return asyncio.run(self.async_get_merge_request_diff())
+    def get_merge_request_diff(
+        self,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
+    ) -> str:
+        """
+        Fetch the merge request diff from GitLab API.
+
+        Args:
+            project_id: Project ID (uses default if not provided)
+            mr_iid: MR IID (uses default if not provided)
+
+        Returns:
+            Formatted diff string for analysis
+
+        Raises:
+            GitLabAPIError: If diff retrieval fails
+        """
+        return asyncio.run(self.async_get_merge_request_diff(project_id, mr_iid))
 
     @api_retry
-    def get_merge_request_diffs_raw(self) -> list[dict[str, Any]]:
+    def get_merge_request_diffs_raw(
+        self,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
+    ) -> list[dict[str, Any]]:
         """
         Fetch raw merge request diffs from GitLab API.
+
+        Args:
+            project_id: Project ID (uses default if not provided)
+            mr_iid: MR IID (uses default if not provided)
 
         Returns:
             List of raw diff objects from GitLab API
@@ -265,16 +309,24 @@ class GitLabClient(AsyncGitLabClient):
         Raises:
             GitLabAPIError: If diff retrieval fails
         """
-        return asyncio.run(self.async_get_merge_request_diffs_raw())
+        return asyncio.run(self.async_get_merge_request_diffs_raw(project_id, mr_iid))
     
     @api_retry
-    def post_comment(self, body: str, position: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def post_comment(
+        self,
+        body: str,
+        position: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Post a comment to the merge request.
 
         Args:
             body: Comment body text
             position: Optional position data for inline comments
+            project_id: Project ID (uses default if not provided)
+            mr_iid: MR IID (uses default if not provided)
 
         Returns:
             API response data for the created comment
@@ -282,13 +334,16 @@ class GitLabClient(AsyncGitLabClient):
         Raises:
             GitLabAPIError: If comment posting fails
         """
+        pid = project_id or self.project_id
+        iid = mr_iid or self.mr_iid
+
         # Use discussions endpoint for inline comments (with position)
         # Use notes endpoint for general MR comments (without position)
         if position:
-            url = f"{self.api_url}/projects/{self.project_id}/merge_requests/{self.mr_iid}/discussions"
+            url = f"{self.api_url}/projects/{pid}/merge_requests/{iid}/discussions"
             payload = {"body": body, "position": position}
         else:
-            url = f"{self.api_url}/projects/{self.project_id}/merge_requests/{self.mr_iid}/notes"
+            url = f"{self.api_url}/projects/{pid}/merge_requests/{iid}/notes"
             payload = {"body": body}
         
         try:
@@ -348,7 +403,9 @@ class GitLabClient(AsyncGitLabClient):
         start_sha: str,
         head_sha: str,
         old_line: Optional[int] = None,
-        line_code: Optional[str] = None
+        line_code: Optional[str] = None,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Post an inline comment to a specific line in a file.
@@ -362,6 +419,8 @@ class GitLabClient(AsyncGitLabClient):
             head_sha: Head SHA of the merge request
             old_line: Line number in old file (for context lines)
             line_code: GitLab line_code identifier (required for context lines)
+            project_id: Project ID (uses default if not provided)
+            mr_iid: MR IID (uses default if not provided)
 
         Returns:
             API response data for the created comment
@@ -395,7 +454,7 @@ class GitLabClient(AsyncGitLabClient):
             }
         )
 
-        return self.post_comment(body, position)
+        return self.post_comment(body, position, project_id, mr_iid)
     
     def _format_diff(self, diffs: List[Dict[str, Any]]) -> str:
         """
@@ -424,17 +483,27 @@ class GitLabClient(AsyncGitLabClient):
         
         return "\n".join(formatted_parts)
     
-    def get_merge_request_details(self) -> Dict[str, Any]:
+    def get_merge_request_details(
+        self,
+        project_id: Optional[str] = None,
+        mr_iid: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Fetch detailed information about the merge request.
-        
+
+        Args:
+            project_id: Project ID (uses default if not provided)
+            mr_iid: MR IID (uses default if not provided)
+
         Returns:
             Merge request details including SHAs and metadata
-            
+
         Raises:
             GitLabAPIError: If MR details retrieval fails
         """
-        url = f"{self.api_url}/projects/{self.project_id}/merge_requests/{self.mr_iid}"
+        pid = project_id or self.project_id
+        iid = mr_iid or self.mr_iid
+        url = f"{self.api_url}/projects/{pid}/merge_requests/{iid}"
         
         try:
             self.logger.debug(f"Fetching MR details from {url}")

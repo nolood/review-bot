@@ -47,17 +47,23 @@ class AsyncClientManager:
         """
         try:
             # Import here to avoid circular dependencies
-            from .gitlab_client_async import AsyncGitLabClient
+            from .gitlab_client_async import AsyncGitLabClient, GitLabClient
             from .glm_client_async import AsyncGLMClient
             from .diff_parser import DiffParser
             from .comment_publisher import CommentPublisher
-            
+
             # Initialize async GitLab client
-            gitlab_client = AsyncGitLabClient(
+            async_gitlab_client = AsyncGitLabClient(
                 timeout=getattr(self.settings, 'gitlab_timeout', 60),
                 limits=getattr(self.settings, 'http_limits', None)
             )
-            
+
+            # Initialize sync GitLab client wrapper for CommentPublisher
+            sync_gitlab_client = GitLabClient(
+                timeout=getattr(self.settings, 'gitlab_timeout', 60),
+                limits=getattr(self.settings, 'http_limits', None)
+            )
+
             # Initialize async GLM client
             glm_client = AsyncGLMClient(
                 api_key=getattr(self.settings, 'glm_api_key', ''),
@@ -68,17 +74,17 @@ class AsyncClientManager:
                 timeout=getattr(self.settings, 'glm_timeout', 60),
                 limits=getattr(self.settings, 'http_limits', None)
             )
-            
+
             # Initialize diff parser (synchronous)
             diff_parser = DiffParser(
                 max_chunk_tokens=getattr(self.settings, 'max_diff_size', 50000)
             )
-            
-            # Initialize comment publisher (synchronous)
-            comment_publisher = CommentPublisher(gitlab_client)
+
+            # Initialize comment publisher (synchronous) with sync client
+            comment_publisher = CommentPublisher(sync_gitlab_client)
             
             self.clients = {
-                "gitlab": gitlab_client,
+                "gitlab": async_gitlab_client,
                 "glm": glm_client,
                 "diff_parser": diff_parser,
                 "comment_publisher": comment_publisher

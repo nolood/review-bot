@@ -75,10 +75,28 @@ except ImportError:
     ReviewContext = None
 
 try:
+    from .config.prompts import ReviewType
+except ImportError:
+    print("ReviewType not available, using fallback")
+    # Fallback enum for ReviewType
+    class ReviewType(Enum):
+        GENERAL = "general"
+        SECURITY = "security"
+        PERFORMANCE = "performance"
+        CODE_STYLE = "code_style"
+
+try:
     from .client_manager_async import AsyncClientManager
 except ImportError:
     print("Async client manager not available, using fallback")
     AsyncClientManager = None
+
+try:
+    from .deduplication import CommitTracker, CommentTracker, DeduplicationStrategy
+except ImportError:
+    CommitTracker = None
+    CommentTracker = None
+    DeduplicationStrategy = None
 
 
 # Mock components for standalone development
@@ -281,6 +299,10 @@ class AppServer:
         # Application components
         self.review_processor: Optional[AsyncReviewProcessor] = None
         self.client_manager: Optional[AsyncClientManager] = None
+
+        # Deduplication components
+        self.commit_tracker: Optional[CommitTracker] = None
+        self.comment_tracker: Optional[CommentTracker] = None
         
         # FastAPI app (only if available)
         self.app = None
@@ -377,12 +399,24 @@ class AppServer:
             # Initialize client manager
             self.client_manager = AsyncClientManager(self.settings)
             await self.client_manager.initialize_clients()
-            
+
             # Initialize review processor
             self.review_processor = AsyncReviewProcessor(
                 self.settings,
                 concurrent_limit=self.config.max_concurrent_reviews
             )
+
+            # Initialize deduplication trackers
+            if getattr(self.settings, 'deduplication_enabled', True) and CommitTracker:
+                self.commit_tracker = CommitTracker(ttl_seconds=86400)  # 24 hours
+
+                # Get sync gitlab client for CommentTracker
+                gitlab_client = await self.client_manager.get_client("gitlab")
+                self.comment_tracker = CommentTracker(
+                    gitlab_client=gitlab_client,
+                    bot_username=getattr(self.settings, 'bot_username', 'glm-review-bot')
+                )
+                self.logger.info("Deduplication trackers initialized")
 
             # DO NOT setup signal handlers here - let review_bot_server.py handle them
             # to avoid signal handler conflicts during shutdown
@@ -443,7 +477,7 @@ class AppServer:
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
     
-    async def _log_requests(self, request: Request, call_next):
+    async def _log_requests(self, request, call_next):
         """Log incoming requests with timing."""
         if not FASTAPI_AVAILABLE:
             return None
@@ -777,17 +811,18 @@ class AppServer:
                             content={"message": f"Skipped: Excluded label found"}
                         )
 
-                # Check deduplication (if enabled and modules are available)
-                if getattr(self.settings, 'deduplication_enabled', True):
-                    # TODO: Integrate with CommitTracker when available
-                    # For now, we'll skip deduplication check
-                    # commit_sha = mr_data.get("last_commit", {}).get("id")
-                    # if commit_sha and await commit_tracker.is_commit_reviewed(project_id, mr_iid, commit_sha):
-                    #     return JSONResponse(
-                    #         status_code=200,
-                    #         content={"message": "Skipped: Commit already reviewed"}
-                    #     )
-                    pass
+                # Check deduplication
+                if getattr(self.settings, 'deduplication_enabled', True) and self.commit_tracker:
+                    commit_sha = mr_data.get("last_commit", {}).get("id")
+                    if commit_sha and self.commit_tracker.is_commit_reviewed(project_id, mr_iid, commit_sha):
+                        self.logger.info(
+                            "Skipping already reviewed commit",
+                            extra={"project_id": project_id, "mr_iid": mr_iid, "commit_sha": commit_sha[:8]}
+                        )
+                        return JSONResponse(
+                            status_code=200,
+                            content={"message": f"Skipped: Commit {commit_sha[:8]} already reviewed"}
+                        )
 
                 # Check for concurrent review limits
                 active_count = sum(
@@ -898,23 +933,48 @@ class AppServer:
                 mr_iid=mr_iid
             )
 
+            # Cleanup old bot comments before new review
+            if getattr(self.settings, 'deduplication_enabled', True) and self.comment_tracker:
+                try:
+                    cleanup_result = await self.comment_tracker.cleanup_old_comments(
+                        project_id=project_id,
+                        mr_iid=mr_iid,
+                        strategy=DeduplicationStrategy.DELETE_ALL
+                    )
+                    self.logger.info(
+                        "Old comments cleanup completed",
+                        extra={
+                            "project_id": project_id,
+                            "mr_iid": mr_iid,
+                            "deleted": cleanup_result.deleted_count,
+                            "failed": cleanup_result.failed_count
+                        }
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Comment cleanup failed, continuing: {e}")
+
             # Update progress
             task.progress = 0.2
             task.message = "Analyzing merge request from webhook"
 
             # Process review with timeout
             result = await asyncio.wait_for(
-                self.review_processor.process_review(task.context),
+                self.review_processor.process_merge_request(
+                    dry_run=False,
+                    review_type=ReviewType.GENERAL,
+                    project_id=project_id,
+                    mr_iid=mr_iid
+                ),
                 timeout=self.config.review_timeout_seconds
             )
 
-            # Mark commit as reviewed (if deduplication enabled)
-            if getattr(self.settings, 'deduplication_enabled', True):
-                # TODO: Integrate with CommitTracker when available
-                # commit_sha = webhook_payload.get("object_attributes", {}).get("last_commit", {}).get("id")
-                # if commit_sha:
-                #     await commit_tracker.mark_commit_reviewed(project_id, mr_iid, commit_sha, result)
-                pass
+            # Mark commit as reviewed
+            if getattr(self.settings, 'deduplication_enabled', True) and self.commit_tracker:
+                commit_sha = webhook_payload.get("object_attributes", {}).get("last_commit", {}).get("id")
+                if commit_sha:
+                    comment_count = result.get("stats", {}).get("total_comments_generated", 0) if isinstance(result, dict) else 0
+                    self.commit_tracker.mark_commit_reviewed(project_id, mr_iid, commit_sha, comment_count)
+                    self.logger.info(f"Marked commit {commit_sha[:8]} as reviewed")
 
             # Update progress
             task.progress = 0.9
@@ -1190,14 +1250,19 @@ class AppServer:
                 project_id=project_id,
                 mr_iid=mr_iid
             )
-            
+
             # Update progress
             task.progress = 0.2
             task.message = "Analyzing merge request"
-            
+
             # Process review with timeout
             result = await asyncio.wait_for(
-                self.review_processor.process_review(task.context),
+                self.review_processor.process_merge_request(
+                    dry_run=False,
+                    review_type=ReviewType.GENERAL,
+                    project_id=project_id,
+                    mr_iid=mr_iid
+                ),
                 timeout=self.config.review_timeout_seconds
             )
             
