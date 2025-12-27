@@ -25,6 +25,14 @@ MANIFEST
 *.manifest
 *.spec
 
+# Python caches
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

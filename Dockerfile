@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     git \
-    netcat \
+    netcat-openbsd \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
@@ -45,7 +45,7 @@ EXPOSE 8000 8001
 
 # Enhanced health check with monitoring endpoints
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8001/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Default command (will be overridden in CI)
-CMD ["python", "review_bot.py"]
+CMD ["python", "review_bot_server.py", "start-server", "--env", "prod"]

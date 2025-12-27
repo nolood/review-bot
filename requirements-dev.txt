@@ -1,21 +1,21 @@
 # Development requirements
-pytest>=8.0.0
-pytest-cov>=4.1.0
-pytest-mock>=3.11.1
-pytest-asyncio>=0.23.0
-pytest-xdist>=3.3.1
-black>=23.7.0
-flake8>=6.0.0
-isort>=5.12.0
-mypy>=1.5.0
-pre-commit>=3.3.3
-responses>=0.23.3
-factory-boy>=3.3.0
-coverage>=7.3.0
-respx>=0.20.0
+pytest==9.0.2
+pytest-cov==7.0.0
+pytest-mock==3.15.1
+pytest-asyncio==1.3.0
+pytest-xdist==3.8.0
+black==25.12.0
+flake8==7.3.0
+isort==7.0.0
+mypy==1.19.1
+pre-commit==4.5.1
+responses==0.25.8
+factory-boy==3.3.3
+coverage==7.13.0
+respx==0.22.0
 
 # Security scanning tools
-safety>=3.0.0
-pip-audit>=2.6.0
-bandit>=1.7.0
-semgrep>=1.45.0
+safety==3.4.1
+pip-audit==2.8.0
+bandit==1.8.3
+semgrep==1.101.0

@@ -13,7 +13,7 @@ from enum import Enum
 from datetime import datetime
 
 try:
-    from .gitlab_client import GitLabClient
+    from .legacy.gitlab_client import GitLabClient
     from .config.settings import settings
     from .utils.logger import get_logger
     from .utils.exceptions import CommentPublishError

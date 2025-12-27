@@ -6,12 +6,105 @@ and environment variable validation.
 """
 
 import os
+import re
 from typing import Optional, List, Dict, Protocol
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+def validate_api_key(key: str, key_name: str, min_length: int = 16) -> None:
+    """
+    Validate API key format and strength.
+
+    Args:
+        key: The API key to validate
+        key_name: Name of the key for error messages
+        min_length: Minimum required key length
+
+    Raises:
+        ValueError: If the key is invalid
+    """
+    if not key:
+        raise ValueError(f"{key_name} cannot be empty or None")
+
+    if len(key) < min_length:
+        raise ValueError(
+            f"{key_name} must be at least {min_length} characters long "
+            f"(got {len(key)} characters)"
+        )
+
+    # Check for common weak patterns
+    weak_patterns = [
+        r'^123456',  # Sequential numbers
+        r'^abcdef',  # Sequential letters
+        r'^test',    # Common test patterns
+        r'^password',  # Common password
+        r'^example',  # Example placeholder
+        r'^dummy',   # Dummy placeholder
+    ]
+
+    for pattern in weak_patterns:
+        if re.match(pattern, key, re.IGNORECASE):
+            raise ValueError(
+                f"{key_name} appears to be a weak or placeholder key. "
+                f"Please use a valid production key."
+            )
+
+
+def validate_url(url: str, url_name: str) -> None:
+    """
+    Validate URL format.
+
+    Args:
+        url: The URL to validate
+        url_name: Name of the URL for error messages
+
+    Raises:
+        ValueError: If the URL is invalid
+    """
+    if not url:
+        raise ValueError(f"{url_name} cannot be empty or None")
+
+    url_pattern = re.compile(
+        r'^https?://'  # http:// or https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain
+        r'localhost|'  # localhost
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # IP address
+        r'(?::\d+)?'  # optional port
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE
+    )
+
+    if not url_pattern.match(url):
+        raise ValueError(
+            f"{url_name} must be a valid URL (got: {url})"
+        )
+
+
+def validate_gitlab_token(token: str) -> None:
+    """
+    Validate GitLab personal access token format.
+
+    Args:
+        token: The GitLab token to validate
+
+    Raises:
+        ValueError: If the token is invalid
+    """
+    # GitLab PATs are typically 20 characters for legacy or 52 for new format
+    if len(token) not in [20, 52] and len(token) < 16:
+        raise ValueError(
+            f"GitLab token must be either 20 characters (legacy) or "
+            f"52 characters (new format), got {len(token)} characters"
+        )
+
+    # New format GitLab tokens should start with glpat-
+    if len(token) == 52 and not token.startswith("glpat-"):
+        raise ValueError(
+            "GitLab token format should start with 'glpat-' for 52 character tokens"
+        )
 
 
 @dataclass
@@ -126,11 +219,15 @@ class Settings:
 
     def __post_init__(self):
         """Validate settings after initialization."""
+        # Validate secrets
+        validate_gitlab_token(self.gitlab_token)
+        validate_api_key(self.glm_api_key, "GLM_API_KEY", min_length=32)
+
+        # Validate URLs
+        validate_url(self.gitlab_api_url, "GITLAB_API_URL")
+        validate_url(self.glm_api_url, "GLM_API_URL")
+
         # Ensure required fields are present
-        if not self.gitlab_token:
-            raise ValueError("GITLAB_TOKEN environment variable is required")
-        if not self.glm_api_key:
-            raise ValueError("GLM_API_KEY environment variable is required")
         if not self.project_id:
             raise ValueError("CI_PROJECT_ID environment variable is required")
         if not self.mr_iid:
