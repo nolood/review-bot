@@ -254,7 +254,7 @@ class AsyncGitLabClient:
     async def post_comment(
         self,
         body: str,
-        position: Optional[dict[str, Any]] = None,
+        position: dict[str, Any] | None = None,
         project_id: str | None = None,
         mr_iid: str | None = None
     ) -> dict[str, Any]:
@@ -802,7 +802,7 @@ class GitLabClient:
     def post_comment(
         self,
         body: str,
-        position: Optional[dict[str, Any]] = None,
+        position: dict[str, Any] | None = None,
         project_id: str | None = None,
         mr_iid: str | None = None
     ) -> dict[str, Any]:
