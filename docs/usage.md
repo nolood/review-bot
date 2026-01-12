@@ -278,6 +278,78 @@ python review_bot.py \
   --dry-run
 ```
 
+## Automatic Discussion Resolution
+
+The bot supports automatic resolution of review discussion threads through simple commands in webhook replies.
+
+### How to Use
+
+When the bot posts review comments with suggestions, reviewers can automatically resolve/close the discussion by replying with a single message:
+
+```
+done
+```
+
+The message must be exactly "done" (case-insensitive, whitespace ignored). Examples:
+
+- ✓ `done` - resolves discussion
+- ✓ `Done` - resolves discussion (case-insensitive)
+- ✓ `  done  ` - resolves discussion (whitespace trimmed)
+- ✗ `done!` - does NOT resolve (doesn't match exactly)
+- ✗ `I'm done with this` - does NOT resolve (must be standalone)
+
+### When It Works
+
+The bot automatically resolves discussions when:
+
+1. A reply to a discussion thread contains exactly "done"
+2. The discussion thread is on a merge request
+3. The discussion thread was created by the bot
+4. The discussion thread is not already resolved
+
+### Setup Requirements
+
+The auto-close feature requires:
+
+1. **Webhook enabled** with Note Hook events
+   - Go to GitLab project Settings > Integrations > Webhooks
+   - Check the "Note Hook" trigger event
+
+2. **BOT_USERNAME configured**
+   ```bash
+   # In your .env or environment
+   BOT_USERNAME=review-bot
+   # (or whatever username your bot uses)
+   ```
+
+### Workflow Example
+
+```
+1. Bot reviews code and posts:
+   "Consider using asyncio for parallel processing here"
+   → A discussion thread is created
+
+2. Author reviews the suggestion:
+   Replies to discussion thread: "done"
+
+3. Bot webhook processes the reply:
+   - Detects the "done" message
+   - Confirms it's a bot-created discussion
+   - Automatically resolves the discussion
+
+4. Result:
+   - Discussion is marked as "Resolved" in GitLab UI
+   - No manual action needed from the author
+   - Cleans up discussion threads automatically
+```
+
+### Benefits
+
+- **Less Manual Work**: Authors don't need to click "Resolve" button
+- **Clear Workflow**: Simple "done" message is intuitive
+- **Clean Discussions**: Resolved threads are clearly marked
+- **Audit Trail**: Automatic resolution is logged
+
 ## Integration Examples
 
 ### With Pre-commit Hooks

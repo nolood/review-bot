@@ -10,7 +10,7 @@ Provides comprehensive webhook processing with:
 
 import json
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -20,6 +20,7 @@ from .models import (
     WebhookEventType,
     MergeRequestWebhookPayload,
     PushWebhookPayload,
+    NoteWebhookPayload,
     WebhookValidationResult,
 )
 from .validators import (
@@ -43,8 +44,8 @@ class WebhookParsingError(ReviewBotError):
     def __init__(
         self,
         message: str,
-        payload_excerpt: Optional[str] = None,
-        validation_errors: Optional[list[dict[str, Any]]] = None,
+        payload_excerpt: str | None = None,
+        validation_errors: list[dict[str, Any]] | None = None,
     ):
         """Initialize webhook parsing error."""
         details: dict[str, Any] = {}
@@ -78,7 +79,7 @@ class WebhookContext:
     mr_iid: int
     mr_id: int
     mr_title: str
-    mr_description: Optional[str]
+    mr_description: str | None
     mr_state: str
     mr_url: str
 
@@ -87,8 +88,8 @@ class WebhookContext:
     target_branch: str
 
     # Commit information
-    head_sha: Optional[str]
-    base_sha: Optional[str]
+    head_sha: str | None
+    base_sha: str | None
 
     # User information
     author_id: int
@@ -375,7 +376,190 @@ class WebhookHandler:
 
         return context
 
-    def _detect_event_type(self, headers: dict[str, str]) -> Optional[WebhookEventType]:
+    async def handle_note_event(
+        self,
+        payload: NoteWebhookPayload,
+        gitlab_client: Any,
+        bot_username: str = "review-bot"
+    ) -> dict[str, Any]:
+        """
+        Handle NOTE webhook events for discussion resolution.
+
+        Processes note events to automatically resolve discussion threads when:
+        - Note is on a merge request
+        - Note is part of a discussion thread
+        - Discussion is resolvable
+        - Discussion is not already resolved
+        - Note body is exactly "done" (case-insensitive)
+        - Discussion was created by the bot
+
+        Args:
+            payload: Validated note webhook payload
+            gitlab_client: AsyncGitLabClient instance
+            bot_username: Bot username to check thread ownership
+
+        Returns:
+            Dictionary with processing status and details
+
+        Raises:
+            ReviewBotError: If discussion resolution fails
+        """
+        from ..utils.exceptions import GitLabAPIError
+
+        self._logger.debug(
+            "Processing note event",
+            extra={
+                "note_id": payload.object_attributes.id,
+                "noteable_type": payload.object_attributes.noteable_type,
+                "is_discussion": payload.is_discussion_note,
+                "project_id": payload.project_id,
+            },
+        )
+
+        # Check if MR note
+        if not payload.is_merge_request_note:
+            return {
+                "status": "skipped",
+                "reason": "Not a merge request note"
+            }
+
+        # Check if discussion note
+        if not payload.is_discussion_note:
+            return {
+                "status": "skipped",
+                "reason": "Not a discussion thread note"
+            }
+
+        # Check if resolvable
+        if not payload.object_attributes.resolvable:
+            return {
+                "status": "skipped",
+                "reason": "Discussion is not resolvable"
+            }
+
+        # Check if already resolved
+        if payload.object_attributes.resolved:
+            return {
+                "status": "skipped",
+                "reason": "Discussion already resolved"
+            }
+
+        # Check note body
+        if payload.note_body.strip().lower() != "done":
+            return {
+                "status": "skipped",
+                "reason": "Note body does not match 'done'"
+            }
+
+        # Get project_id and mr_iid from payload
+        if payload.merge_request is None:
+            raise ReviewBotError(
+                message="Missing merge request details in note webhook payload",
+                error_code="MISSING_MR_DETAILS",
+                details={"note_id": payload.object_attributes.id}
+            )
+
+        project_id = str(payload.project_id)
+        mr_iid = str(payload.merge_request.iid)
+        discussion_id = payload.discussion_id
+
+        if not discussion_id:
+            raise ReviewBotError(
+                message="Missing discussion ID in note webhook payload",
+                error_code="MISSING_DISCUSSION_ID",
+                details={"note_id": payload.object_attributes.id}
+            )
+
+        # Check if the discussion was created by the bot
+        try:
+            discussion = await gitlab_client.get_discussion(
+                discussion_id=discussion_id,
+                project_id=project_id,
+                mr_iid=mr_iid
+            )
+
+            # Check if the first note (original comment) was created by the bot
+            notes = discussion.get("notes", [])
+            if not notes:
+                return {
+                    "status": "skipped",
+                    "reason": "Discussion has no notes"
+                }
+
+            first_note_author = notes[0].get("author", {}).get("username", "")
+            if first_note_author != bot_username:
+                self._logger.debug(
+                    f"Discussion not created by bot (author: {first_note_author}, expected: {bot_username})"
+                )
+                return {
+                    "status": "skipped",
+                    "reason": f"Discussion was not created by the bot (author: {first_note_author})"
+                }
+
+        except Exception as e:
+            self._logger.warning(
+                f"Failed to verify discussion author: {str(e)}",
+                extra={
+                    "discussion_id": discussion_id,
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "error": str(e)
+                }
+            )
+            return {
+                "status": "skipped",
+                "reason": f"Failed to verify discussion author: {str(e)}"
+            }
+
+        try:
+            # Resolve the discussion
+            await gitlab_client.resolve_discussion(
+                discussion_id=discussion_id,
+                resolved=True,
+                project_id=project_id,
+                mr_iid=mr_iid
+            )
+
+            self._logger.info(
+                "Discussion thread resolved successfully",
+                extra={
+                    "discussion_id": discussion_id,
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "resolved_by": payload.user.username,
+                }
+            )
+
+            return {
+                "status": "success",
+                "discussion_id": discussion_id,
+                "project_id": project_id,
+                "mr_iid": mr_iid,
+                "resolved_by": payload.user.username
+            }
+
+        except GitLabAPIError as e:
+            self._logger.error(
+                f"Failed to resolve discussion: {str(e)}",
+                extra={
+                    "discussion_id": discussion_id,
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "error": str(e)
+                }
+            )
+            raise ReviewBotError(
+                message=f"Failed to resolve discussion: {str(e)}",
+                error_code="DISCUSSION_RESOLUTION_FAILED",
+                details={
+                    "discussion_id": discussion_id,
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "original_error": str(e)
+                }
+            ) from e
+
+    def _detect_event_type(self, headers: dict[str, str]) -> WebhookEventType | None:
         """
         Detect webhook event type from headers.
 
@@ -411,7 +595,7 @@ class WebhookHandler:
 
     def _parse_payload(
         self, event_type: WebhookEventType, payload_dict: dict[str, Any]
-    ) -> MergeRequestWebhookPayload | PushWebhookPayload:
+    ) -> MergeRequestWebhookPayload | PushWebhookPayload | NoteWebhookPayload:
         """
         Parse webhook payload based on event type.
 
@@ -430,5 +614,7 @@ class WebhookHandler:
             return MergeRequestWebhookPayload(**payload_dict)
         elif event_type == WebhookEventType.PUSH:
             return PushWebhookPayload(**payload_dict)
+        elif event_type == WebhookEventType.NOTE:
+            return NoteWebhookPayload(**payload_dict)
         else:
             raise ValueError(f"Unsupported event type for parsing: {event_type.value}")

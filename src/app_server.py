@@ -98,6 +98,11 @@ except ImportError:
     CommentTracker = None
     DeduplicationStrategy = None
 
+try:
+    from .webhook.models import NoteWebhookPayload
+except ImportError:
+    NoteWebhookPayload = None
+
 
 # Mock components for standalone development
 class MockSettings:
@@ -747,6 +752,10 @@ class AppServer:
                 # Extract event type and data
                 event_type = payload.get("object_kind")
 
+                # Handle NOTE webhook for discussion resolution
+                if event_type == "note":
+                    return await self._handle_note_webhook(payload, request)
+
                 if event_type != "merge_request":
                     return JSONResponse(
                         status_code=200,
@@ -1051,6 +1060,218 @@ class AppServer:
                     "error_message": str(e)
                 },
                 exc_info=True
+            )
+
+    async def _handle_note_webhook(
+        self,
+        payload: Dict[str, Any],
+        request: Request
+    ) -> JSONResponse:
+        """
+        Handle NOTE webhook for discussion resolution.
+
+        This method processes note webhooks to automatically resolve discussions
+        when a user posts a comment with the text "done".
+
+        Args:
+            payload: The webhook payload dictionary
+            request: The FastAPI request object
+
+        Returns:
+            JSONResponse with the processing result
+        """
+        try:
+            # Check if NoteWebhookPayload model is available
+            if NoteWebhookPayload is None:
+                self.logger.warning("NoteWebhookPayload model not available")
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": "Note webhook model not available"}
+                )
+
+            # Parse payload into NoteWebhookPayload model
+            try:
+                note_payload = NoteWebhookPayload(**payload)
+            except Exception as e:
+                self.logger.warning(
+                    "Failed to parse note webhook payload",
+                    extra={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    }
+                )
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": "Invalid note webhook payload"}
+                )
+
+            # Validate it's a MR discussion note
+            if not note_payload.is_merge_request_note:
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": "Ignored: Not a merge request note"}
+                )
+
+            # Check if it's part of a discussion
+            if not note_payload.is_discussion_note:
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": "Ignored: Not a discussion note"}
+                )
+
+            # Check if merge_request object exists
+            if note_payload.merge_request is None:
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": "Ignored: No merge request data in payload"}
+                )
+
+            # Check if note body is "done" (case-insensitive)
+            note_body = note_payload.note_body.strip().lower()
+            if note_body != "done":
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": f"Ignored: Note body is not 'done' (got: '{note_body}')"}
+                )
+
+            # Extract required data
+            project_id = str(note_payload.project_id)
+            mr_iid = str(note_payload.merge_request.iid)
+            discussion_id = note_payload.discussion_id
+
+            # Validate discussion_id is present
+            if not discussion_id:
+                self.logger.warning("Missing discussion_id in note webhook payload")
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": "Ignored: Missing discussion_id"}
+                )
+
+            self.logger.info(
+                "Processing note webhook for discussion resolution",
+                extra={
+                    "project_id": project_id,
+                    "mr_iid": mr_iid,
+                    "discussion_id": discussion_id,
+                    "note_body": note_payload.note_body
+                }
+            )
+
+            # Get gitlab_client from client_manager
+            if not self.client_manager:
+                self.logger.error("Client manager not available")
+                return JSONResponse(
+                    status_code=500,
+                    content={"message": "Client manager not initialized"}
+                )
+
+            try:
+                gitlab_client = await self.client_manager.get_client("gitlab")
+            except Exception as e:
+                self.logger.error(
+                    "Failed to get GitLab client",
+                    extra={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    },
+                    exc_info=True
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content={"message": f"Failed to get GitLab client: {str(e)}"}
+                )
+
+            # Check if discussion was created by the bot
+            bot_username = getattr(self.settings, 'bot_username', None) or os.getenv('BOT_USERNAME', 'review-bot')
+
+            try:
+                discussion = await gitlab_client.get_discussion(
+                    discussion_id=discussion_id,
+                    project_id=project_id,
+                    mr_iid=mr_iid
+                )
+
+                notes = discussion.get("notes", [])
+                if notes:
+                    first_author = notes[0].get("author", {}).get("username", "")
+                    if first_author != bot_username:
+                        self.logger.debug(
+                            f"Discussion not created by bot (author: {first_author})"
+                        )
+                        return JSONResponse(
+                            status_code=200,
+                            content={
+                                "message": f"Note ignored: discussion not created by bot (author: {first_author})"
+                            }
+                        )
+            except Exception as e:
+                self.logger.warning(f"Failed to verify discussion ownership: {e}")
+                return JSONResponse(
+                    status_code=200,
+                    content={"message": f"Note ignored: could not verify discussion ownership"}
+                )
+
+            # Call resolve_discussion() on the client
+            try:
+                result = await gitlab_client.resolve_discussion(
+                    discussion_id=discussion_id,
+                    resolved=True,
+                    project_id=project_id,
+                    mr_iid=mr_iid
+                )
+
+                self.logger.info(
+                    "Discussion resolved successfully",
+                    extra={
+                        "project_id": project_id,
+                        "mr_iid": mr_iid,
+                        "discussion_id": discussion_id,
+                        "result": result
+                    }
+                )
+
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "message": "Discussion resolved successfully",
+                        "discussion_id": discussion_id,
+                        "project_id": project_id,
+                        "mr_iid": mr_iid
+                    }
+                )
+
+            except Exception as e:
+                self.logger.error(
+                    "Failed to resolve discussion",
+                    extra={
+                        "project_id": project_id,
+                        "mr_iid": mr_iid,
+                        "discussion_id": discussion_id,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    },
+                    exc_info=True
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "message": f"Failed to resolve discussion: {str(e)}",
+                        "discussion_id": discussion_id
+                    }
+                )
+
+        except Exception as e:
+            self.logger.error(
+                "Note webhook processing failed",
+                extra={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                },
+                exc_info=True
+            )
+            return JSONResponse(
+                status_code=500,
+                content={"message": f"Internal server error: {str(e)}"}
             )
 
     def _setup_web_interface(self) -> None:

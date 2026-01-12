@@ -8,6 +8,7 @@ This directory contains comprehensive documentation for the GLM-powered GitLab c
 - [Installation Guide](installation.md) - How to install and set up bot
 - [Configuration Guide](configuration.md) - How to configure the bot for your project
 - [Webhook Setup Guide](webhook_setup.md) - GitLab webhook integration setup and configuration
+- [Auto-Close Discussions](auto_close_discussions.md) - Automatic discussion resolution feature
 - [Deployment Guide](deployment.md) - Comprehensive production deployment instructions
 - [Maintenance Procedures](maintenance.md) - Ongoing maintenance and operational procedures
 - [Usage Examples](usage.md) - Examples of how to use the bot effectively
@@ -45,6 +46,7 @@ The GLM Code Review Bot is a sophisticated automated code review system that int
 - **Intelligent Code Analysis**: Leverages GLM-4 for understanding code context and generating meaningful feedback
 - **Multiple Review Types**: Supports general, security-focused, and performance-oriented reviews
 - **Webhook Integration**: Real-time review triggering via GitLab webhooks with signature validation
+- **Auto-Close Discussions**: Automatically resolves review threads when reviewers reply "done"
 - **Configurable Filtering**: Prioritizes important files and ignores irrelevant ones
 - **Inline Comments**: Places feedback directly on relevant lines of code
 - **Smart Deduplication**: Multiple strategies for managing duplicate comments across updates

@@ -51,6 +51,19 @@ class MergeRequestAction(str, Enum):
     MERGE = "merge"
 
 
+class NoteableType(str, Enum):
+    """
+    GitLab noteable object types.
+
+    Types of objects that can have notes/comments attached.
+    """
+
+    MERGE_REQUEST = "MergeRequest"
+    ISSUE = "Issue"
+    COMMIT = "Commit"
+    SNIPPET = "Snippet"
+
+
 class GitLabUser(BaseModel):
     """
     GitLab user object.
@@ -90,6 +103,35 @@ class GitLabProject(BaseModel):
     path_with_namespace: str = Field(..., description="Full project path with namespace")
     default_branch: str | None = Field(None, description="Default branch name")
     homepage: str | None = Field(None, description="Project homepage URL")
+
+    class Config:
+        """Pydantic configuration."""
+
+        frozen = False
+        extra = "allow"
+
+
+class GitLabNote(BaseModel):
+    """
+    GitLab note/comment object.
+
+    Represents a note/comment in GitLab webhook payloads.
+    """
+
+    id: int = Field(..., description="Note ID")
+    note: str = Field(..., description="Note content/body")
+    noteable_type: str = Field(..., description="Type of noteable object")
+    noteable_id: int | None = Field(None, description="ID of noteable object")
+    author_id: int = Field(..., description="Note author ID")
+    created_at: str = Field(..., description="Creation timestamp")
+    updated_at: str = Field(..., description="Last update timestamp")
+    project_id: int = Field(..., description="Project ID")
+    discussion_id: str | None = Field(None, description="Discussion thread ID")
+    resolvable: bool = Field(False, description="Whether note can be resolved")
+    resolved: bool = Field(False, description="Whether note is resolved")
+    system: bool = Field(False, description="Whether this is a system note")
+    url: str = Field(..., description="Note web URL")
+    position: dict[str, Any] | None = Field(None, description="Position data for diff comments")
 
     class Config:
         """Pydantic configuration."""
@@ -308,6 +350,58 @@ class PushWebhookPayload(BaseModel):
         extra = "allow"
 
 
+class NoteWebhookPayload(BaseModel):
+    """
+    GitLab note/comment webhook payload.
+
+    Complete structure for note webhook events (comments on MRs, issues, commits, snippets).
+    """
+
+    object_kind: str = Field(..., description="Event type (always 'note')")
+    event_type: str = Field(..., description="Event type name")
+    user: GitLabUser = Field(..., description="User who triggered the event")
+    project_id: int = Field(..., description="Project ID")
+    project: GitLabProject = Field(..., description="Project details")
+    object_attributes: GitLabNote = Field(..., description="Note details")
+    merge_request: GitLabMergeRequest | None = Field(
+        None, description="MR details if note on MR"
+    )
+
+    @field_validator("object_kind")
+    @classmethod
+    def validate_object_kind(cls, v: str) -> str:
+        """Validate that object_kind is 'note'."""
+        if v != "note":
+            raise ValueError(f"Expected object_kind 'note', got '{v}'")
+        return v
+
+    @property
+    def is_merge_request_note(self) -> bool:
+        """Check if note is on a merge request."""
+        return self.object_attributes.noteable_type == "MergeRequest"
+
+    @property
+    def is_discussion_note(self) -> bool:
+        """Check if note is part of a discussion thread."""
+        return self.object_attributes.discussion_id is not None
+
+    @property
+    def note_body(self) -> str:
+        """Get note content."""
+        return self.object_attributes.note
+
+    @property
+    def discussion_id(self) -> str | None:
+        """Get discussion ID."""
+        return self.object_attributes.discussion_id
+
+    class Config:
+        """Pydantic configuration."""
+
+        frozen = False
+        extra = "allow"
+
+
 class WebhookValidationResult(BaseModel):
     """
     Result of webhook validation.
@@ -319,9 +413,9 @@ class WebhookValidationResult(BaseModel):
     event_type: WebhookEventType | None = Field(None, description="Validated event type")
     should_process: bool = Field(False, description="Whether event should be processed")
     rejection_reason: str | None = Field(None, description="Reason for rejection if not valid")
-    payload: MergeRequestWebhookPayload | PushWebhookPayload | None = Field(
-        None, description="Parsed webhook payload"
-    )
+    payload: (
+        MergeRequestWebhookPayload | PushWebhookPayload | NoteWebhookPayload | None
+    ) = Field(None, description="Parsed webhook payload")
 
     class Config:
         """Pydantic configuration."""

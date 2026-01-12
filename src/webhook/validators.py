@@ -27,6 +27,7 @@ from .models import (
     MergeRequestAction,
     MergeRequestWebhookPayload,
     PushWebhookPayload,
+    NoteWebhookPayload,
     WebhookValidationResult,
 )
 
@@ -74,7 +75,7 @@ class WebhookConfig:
 
     # Event filtering
     allowed_event_types: list[WebhookEventType] = field(
-        default_factory=lambda: [WebhookEventType.MERGE_REQUEST]
+        default_factory=lambda: [WebhookEventType.MERGE_REQUEST, WebhookEventType.NOTE]
     )
 
     # MR action filtering
@@ -229,7 +230,7 @@ class WebhookEventFilter:
     def should_process(
         self,
         event_type: WebhookEventType,
-        payload: MergeRequestWebhookPayload | PushWebhookPayload,
+        payload: MergeRequestWebhookPayload | PushWebhookPayload | NoteWebhookPayload,
     ) -> tuple[bool, str | None]:
         """
         Determine if webhook should be processed.
@@ -252,6 +253,8 @@ class WebhookEventFilter:
             return self._filter_merge_request(payload)  # type: ignore
         elif event_type == WebhookEventType.PUSH:
             return self._filter_push(payload)  # type: ignore
+        elif event_type == WebhookEventType.NOTE:
+            return self._filter_note(payload)  # type: ignore
 
         # Unknown event type (should not reach here)
         return True, None
@@ -396,6 +399,59 @@ class WebhookEventFilter:
         )
         return True, None
 
+    def _filter_note(
+        self, payload: NoteWebhookPayload
+    ) -> tuple[bool, str | None]:
+        """
+        Filter note webhook.
+
+        Args:
+            payload: Note webhook payload
+
+        Returns:
+            Tuple of (should_process, rejection_reason)
+        """
+        # Check if note is on a merge request
+        if not payload.is_merge_request_note:
+            reason = "Note is not on a merge request"
+            self._logger.debug(f"Rejecting note webhook: {reason}", extra={"note_id": payload.object_attributes.id})
+            return False, reason
+
+        # Check if note is part of a discussion
+        if not payload.is_discussion_note:
+            reason = "Note is not part of a discussion"
+            self._logger.debug(f"Rejecting note webhook: {reason}", extra={"note_id": payload.object_attributes.id})
+            return False, reason
+
+        # Check if note is resolvable
+        if not payload.object_attributes.resolvable:
+            reason = "Note is not resolvable"
+            self._logger.debug(f"Rejecting note webhook: {reason}", extra={"note_id": payload.object_attributes.id})
+            return False, reason
+
+        # Check if note is already resolved
+        if payload.object_attributes.resolved:
+            reason = "Note is already resolved"
+            self._logger.debug(f"Rejecting note webhook: {reason}", extra={"note_id": payload.object_attributes.id})
+            return False, reason
+
+        # Check if note body is "done" (case-insensitive)
+        if payload.note_body.strip().lower() != "done":
+            reason = f"Note body does not match 'done': '{payload.note_body.strip()}'"
+            self._logger.debug(f"Rejecting note webhook: {reason}", extra={"note_id": payload.object_attributes.id})
+            return False, reason
+
+        # All checks passed
+        self._logger.info(
+            "Note webhook passed all filters",
+            extra={
+                "note_id": payload.object_attributes.id,
+                "discussion_id": payload.discussion_id,
+                "note_body": payload.note_body.strip(),
+            },
+        )
+        return True, None
+
 
 def validate_webhook(
     headers: dict[str, str],
@@ -477,6 +533,8 @@ def validate_webhook(
             payload = MergeRequestWebhookPayload(**body)
         elif event_type == WebhookEventType.PUSH:
             payload = PushWebhookPayload(**body)
+        elif event_type == WebhookEventType.NOTE:
+            payload = NoteWebhookPayload(**body)
         else:
             logger.info(f"Event type {event_type.value} not supported for processing")
             return WebhookValidationResult(

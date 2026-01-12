@@ -7,7 +7,7 @@ including fetching merge request diffs, posting comments, and handling errors.
 
 import os
 import json
-from typing import Dict, List, Optional, Any, Type
+from typing import Any
 from contextlib import asynccontextmanager
 
 import httpx
@@ -35,7 +35,7 @@ class AsyncGitLabClient:
     posting comments, and handling GitLab API responses.
     """
     
-    def __init__(self, timeout: int = 60, limits: Optional[httpx.Limits] = None):
+    def __init__(self, timeout: int = 60, limits: httpx.Limits | None = None):
         """
         Initialize the async GitLab client with configuration settings.
         
@@ -109,8 +109,8 @@ class AsyncGitLabClient:
     
     async def get_merge_request_diff(
         self,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
+        project_id: str | None = None,
+        mr_iid: str | None = None
     ) -> str:
         """
         Async fetch the merge request diff from GitLab API.
@@ -178,8 +178,8 @@ class AsyncGitLabClient:
 
     async def get_merge_request_diffs_raw(
         self,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
+        project_id: str | None = None,
+        mr_iid: str | None = None
     ) -> list[dict[str, Any]]:
         """
         Async fetch raw merge request diffs from GitLab API.
@@ -254,10 +254,10 @@ class AsyncGitLabClient:
     async def post_comment(
         self,
         body: str,
-        position: Optional[Dict[str, Any]] = None,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
-    ) -> Dict[str, Any]:
+        position: Optional[dict[str, Any]] = None,
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
         """
         Async post a comment to the merge request.
 
@@ -334,7 +334,8 @@ class AsyncGitLabClient:
             try:
                 if e.response is not None:
                     error_details = e.response.text
-            except:
+            except Exception:
+                # Ignore errors when extracting error details
                 pass
 
             # Include error_details in the exception message for proper error handling
@@ -374,9 +375,9 @@ class AsyncGitLabClient:
         base_sha: str,
         start_sha: str,
         head_sha: str,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
-    ) -> Dict[str, Any]:
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
         """
         Async post an inline comment to a specific line in a file.
 
@@ -417,12 +418,210 @@ class AsyncGitLabClient:
         )
 
         return await self.post_comment(body, position, project_id, mr_iid)
-    
+
+    async def resolve_discussion(
+        self,
+        discussion_id: str,
+        resolved: bool = True,
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Async resolve or unresolve a discussion on a merge request.
+
+        Args:
+            discussion_id: The ID of the discussion to resolve/unresolve
+            resolved: Whether to resolve (True) or unresolve (False) the discussion
+            project_id: Optional project ID override (uses self.project_id if not provided)
+            mr_iid: Optional MR IID override (uses self.mr_iid if not provided)
+
+        Returns:
+            API response data for the updated discussion
+
+        Raises:
+            GitLabAPIError: If discussion resolution fails
+        """
+        pid = project_id or self.project_id
+        iid = mr_iid or self.mr_iid
+        url = f"{self.api_url}/projects/{pid}/merge_requests/{iid}/discussions/{discussion_id}"
+        payload = {"resolved": resolved}
+
+        try:
+            self.logger.debug(
+                "Resolving discussion",
+                extra={
+                    "url": url,
+                    "discussion_id": discussion_id,
+                    "resolved": resolved
+                }
+            )
+
+            async with self.get_client() as client:
+                response = await client.put(url, json=payload)
+                response.raise_for_status()
+
+                result = response.json()
+
+                self.logger.info(
+                    "Successfully resolved discussion",
+                    extra={
+                        "discussion_id": discussion_id,
+                        "resolved": resolved
+                    }
+                )
+
+                return result
+
+        except httpx.HTTPStatusError as e:
+            # Extract error details from response body
+            error_details = ""
+            try:
+                if e.response is not None:
+                    error_details = e.response.text
+            except Exception:
+                # Ignore errors when extracting error details
+                pass
+
+            # Include error_details in the exception message for proper error handling
+            error_msg = f"Failed to resolve discussion: {str(e)}"
+            if error_details:
+                error_msg = f"{error_msg} - Details: {error_details}"
+
+            self.logger.error(
+                error_msg,
+                extra={
+                    "url": url,
+                    "error_type": type(e).__name__,
+                    "status_code": e.response.status_code if e.response else None,
+                    "discussion_id": discussion_id,
+                    "error_details": error_details
+                }
+            )
+            raise GitLabAPIError(error_msg)
+        except httpx.RequestError as e:
+            error_msg = f"Failed to resolve discussion: {str(e)}"
+            self.logger.error(
+                error_msg,
+                extra={
+                    "url": url,
+                    "error_type": type(e).__name__,
+                    "discussion_id": discussion_id
+                }
+            )
+            raise GitLabAPIError(error_msg)
+
+    async def get_discussion(
+        self,
+        discussion_id: str,
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Async fetch discussion details from a merge request.
+
+        This method retrieves a specific discussion thread, including all notes/comments
+        within that discussion. The first note in the notes array is the original comment
+        that started the discussion.
+
+        GitLab API Reference:
+        GET /projects/:id/merge_requests/:merge_request_iid/discussions/:discussion_id
+
+        Args:
+            discussion_id: The ID of the discussion to retrieve
+            project_id: Optional project ID override (uses self.project_id if not provided)
+            mr_iid: Optional MR IID override (uses self.mr_iid if not provided)
+
+        Returns:
+            Discussion object containing:
+            - id: Discussion ID
+            - individual_note: Whether this is an individual note or a discussion
+            - notes: Array of note objects, where notes[0] is the original comment
+                Each note contains:
+                - id: Note ID
+                - author: Author object with id, username, name
+                - body: Comment body text
+                - created_at, updated_at, etc.
+
+        Raises:
+            GitLabAPIError: If discussion retrieval fails
+
+        Example:
+            discussion = await client.get_discussion("abc123")
+            original_author = discussion["notes"][0]["author"]["username"]
+        """
+        pid = project_id or self.project_id
+        iid = mr_iid or self.mr_iid
+        url = f"{self.api_url}/projects/{pid}/merge_requests/{iid}/discussions/{discussion_id}"
+
+        try:
+            self.logger.debug(
+                "Fetching discussion details",
+                extra={
+                    "url": url,
+                    "discussion_id": discussion_id
+                }
+            )
+
+            async with self.get_client() as client:
+                response = await client.get(url)
+                response.raise_for_status()
+
+                discussion = response.json()
+
+                self.logger.info(
+                    "Successfully retrieved discussion",
+                    extra={
+                        "discussion_id": discussion_id,
+                        "notes_count": len(discussion.get("notes", [])),
+                        "individual_note": discussion.get("individual_note", False)
+                    }
+                )
+
+                return discussion
+
+        except httpx.HTTPStatusError as e:
+            # Extract error details from response body
+            error_details = ""
+            try:
+                if e.response is not None:
+                    error_details = e.response.text
+            except Exception:
+                # Ignore errors when extracting error details
+                pass
+
+            # Include error_details in the exception message for proper error handling
+            error_msg = f"Failed to fetch discussion: {str(e)}"
+            if error_details:
+                error_msg = f"{error_msg} - Details: {error_details}"
+
+            self.logger.error(
+                error_msg,
+                extra={
+                    "url": url,
+                    "error_type": type(e).__name__,
+                    "status_code": e.response.status_code if e.response else None,
+                    "discussion_id": discussion_id,
+                    "error_details": error_details
+                }
+            )
+            raise GitLabAPIError(error_msg)
+        except httpx.RequestError as e:
+            error_msg = f"Failed to fetch discussion: {str(e)}"
+            self.logger.error(
+                error_msg,
+                extra={
+                    "url": url,
+                    "error_type": type(e).__name__,
+                    "discussion_id": discussion_id
+                }
+            )
+            raise GitLabAPIError(error_msg)
+
     async def get_merge_request_details(
         self,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
-    ) -> Dict[str, Any]:
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
         """
         Async fetch detailed information about the merge request.
 
@@ -485,9 +684,9 @@ class AsyncGitLabClient:
     
     async def post_multiple_comments(
         self, 
-        comments: List[Dict[str, Any]], 
+        comments: list[dict[str, Any]], 
         concurrent_limit: int = 5
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Post multiple comments concurrently with rate limiting.
         
@@ -508,7 +707,7 @@ class AsyncGitLabClient:
         
         semaphore = asyncio.Semaphore(concurrent_limit)
         
-        async def post_single_comment(comment_data: Dict[str, Any]) -> Dict[str, Any]:
+        async def post_single_comment(comment_data: dict[str, Any]) -> dict[str, Any]:
             async with semaphore:
                 try:
                     body = comment_data.get("body", "")
@@ -531,7 +730,7 @@ class AsyncGitLabClient:
             self.logger.error(f"Failed to post multiple comments: {e}")
             raise GitLabAPIError(f"Failed to post comments: {e}") from e
     
-    def _format_diff(self, diffs: List[Dict[str, Any]]) -> str:
+    def _format_diff(self, diffs: list[dict[str, Any]]) -> str:
         """
         Format GitLab diff response into a unified diff format.
         
@@ -568,22 +767,22 @@ class GitLabClient:
     executes async operations in a sync context.
     """
     
-    def __init__(self, timeout: int = 60, limits: Optional[httpx.Limits] = None):
+    def __init__(self, timeout: int = 60, limits: httpx.Limits | None = None):
         self._async_client = AsyncGitLabClient(timeout, limits)
         self.logger = get_logger("gitlab_client")
     
     def get_merge_request_diff(
         self,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
+        project_id: str | None = None,
+        mr_iid: str | None = None
     ) -> str:
         """Synchronous wrapper for async method."""
         return asyncio.run(self._async_client.get_merge_request_diff(project_id, mr_iid))
 
     def get_merge_request_diffs_raw(
         self,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
+        project_id: str | None = None,
+        mr_iid: str | None = None
     ) -> list[dict[str, Any]]:
         """
         Fetch raw merge request diffs from GitLab API.
@@ -603,18 +802,18 @@ class GitLabClient:
     def post_comment(
         self,
         body: str,
-        position: Optional[Dict[str, Any]] = None,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
-    ) -> Dict[str, Any]:
+        position: Optional[dict[str, Any]] = None,
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
         """Synchronous wrapper for async method."""
         return asyncio.run(self._async_client.post_comment(body, position, project_id, mr_iid))
 
     def get_merge_request_details(
         self,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
-    ) -> Dict[str, Any]:
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
         """Synchronous wrapper for async method."""
         return asyncio.run(self._async_client.get_merge_request_details(project_id, mr_iid))
 
@@ -626,14 +825,14 @@ class GitLabClient:
         base_sha: str,
         start_sha: str,
         head_sha: str,
-        project_id: Optional[str] = None,
-        mr_iid: Optional[str] = None
-    ) -> Dict[str, Any]:
+        project_id: str | None = None,
+        mr_iid: str | None = None
+    ) -> dict[str, Any]:
         """Synchronous wrapper for async method."""
         return asyncio.run(self._async_client.post_inline_comment(
             body, file_path, line_number, base_sha, start_sha, head_sha, project_id, mr_iid
         ))
     
-    def _format_diff(self, diffs: List[Dict[str, Any]]) -> str:
+    def _format_diff(self, diffs: list[dict[str, Any]]) -> str:
         """Delegate to async client."""
         return self._async_client._format_diff(diffs)

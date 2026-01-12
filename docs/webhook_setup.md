@@ -72,12 +72,18 @@ Select which events should trigger the webhook:
 
 **Recommended Configuration:**
 - [x] **Merge request events** (primary)
+- [x] **Note Hook events** (for auto-closing discussions)
 - [x] **Push events** (optional, for push-based reviews)
 
 **Merge Request Events Details:**
 - The webhook triggers on MR actions: open, update, reopen
 - Draft/WIP merge requests are automatically skipped (configurable)
 - Each trigger sends the complete MR state to the bot
+
+**Note Hook Events Details:**
+- The webhook triggers when someone replies to a discussion thread
+- Used to automatically close/resolve review discussions
+- Triggered for comments on merge requests and inline code comments
 
 ### Step 6: Webhook Options
 
@@ -125,6 +131,9 @@ WEBHOOK_SKIP_WIP=true                         # Skip work-in-progress merge requ
 # Webhook Authentication
 WEBHOOK_VALIDATE_SIGNATURE=true               # Validate webhook signature (default: true)
 WEBHOOK_TIMEOUT_SECONDS=30                    # Webhook request timeout (default: 30)
+
+# Discussion Auto-Close Configuration
+BOT_USERNAME=review-bot                       # Bot username for discussion ownership check (default: "review-bot")
 
 # Deduplication Configuration
 DEDUPLICATION_STRATEGY=DELETE_SUMMARY_ONLY   # Comment deduplication strategy
@@ -175,6 +184,7 @@ LOG_LEVEL=INFO                               # Logging level
 | `WEBHOOK_SKIP_WIP` | boolean | `true` | Automatically skip WIP merge requests |
 | `WEBHOOK_TRIGGER_ACTIONS` | string | `open,update,reopen` | Comma-separated list of MR actions to review |
 | `WEBHOOK_TIMEOUT_SECONDS` | integer | `30` | How long to wait for webhook processing |
+| `BOT_USERNAME` | string | `review-bot` | Bot username to check for discussion thread ownership |
 | `DEDUPLICATION_STRATEGY` | enum | `DELETE_SUMMARY_ONLY` | Strategy for handling duplicate comments |
 | `MAX_CONCURRENT_REVIEWS` | integer | `3` | Maximum parallel reviews to process |
 | `REVIEW_TIMEOUT_SECONDS` | integer | `300` | Maximum time for a single review |
@@ -189,6 +199,10 @@ WEBHOOK_VALIDATE_SIGNATURE=true
 WEBHOOK_SKIP_DRAFT=true
 WEBHOOK_SKIP_WIP=true
 WEBHOOK_TRIGGER_ACTIONS=open,update,reopen
+
+# Discussion Auto-Close Configuration
+# Set this to match your bot's GitLab username
+BOT_USERNAME=review-bot
 
 # GitLab Configuration
 GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
@@ -491,6 +505,78 @@ docker run -v /opt/review-bot/data:/data review-bot:latest
 
 Optional but recommended for production deployments.
 
+## Automatic Discussion Resolution
+
+The bot includes an automatic discussion resolution feature that closes/resolves review threads based on simple commands.
+
+### How It Works
+
+When the bot posts review comments with suggestions or feedback, reviewers can reply with "done" to automatically resolve that discussion thread. This workflow:
+
+1. Bot posts review comments on a merge request
+2. Discussion thread is created automatically by GitLab
+3. Reviewer replies to the discussion with exactly `done` (case-insensitive)
+4. Bot receives the Note Hook webhook event
+5. Bot verifies the discussion was created by the bot
+6. Bot automatically resolves/closes the discussion thread
+
+### Configuration
+
+Enable automatic discussion resolution by ensuring:
+
+1. **Note Hook events are enabled** in your GitLab webhook settings
+2. **BOT_USERNAME is set correctly** to match your bot's GitLab username
+
+```bash
+# In your .env file
+BOT_USERNAME=review-bot
+```
+
+If your bot user is named something different (e.g., "glm-bot", "code-reviewer"), update the BOT_USERNAME environment variable accordingly.
+
+### Usage Example
+
+```
+1. Bot posts review comment:
+   "Consider using a list comprehension here for better performance"
+
+   - A discussion thread is automatically created
+
+2. Reviewer reviews the suggestion and replies:
+   "done"
+
+3. Bot webhook processes the reply:
+   - Detects "done" in the note
+   - Confirms discussion was created by the bot
+   - Resolves the discussion thread
+
+4. Discussion shows as "Resolved" in GitLab UI
+```
+
+### Discussion Resolution Requirements
+
+The bot will only resolve a discussion if ALL the following conditions are met:
+
+- The note is on a **merge request** (not an issue)
+- The note is part of a **discussion thread** (not a standalone comment)
+- The discussion thread **exists and is resolvable**
+- The discussion thread is **not already resolved**
+- The note body is exactly **"done"** (case-insensitive, whitespace trimmed)
+- The discussion thread was **created by the bot user** (matched against BOT_USERNAME)
+
+If any condition fails, the bot skips the discussion without attempting resolution.
+
+### Webhook Requirements for Auto-Close Feature
+
+Ensure your GitLab webhook is configured to receive Note Hook events:
+
+1. Go to **Settings** > **Integrations** > **Webhooks** in your GitLab project
+2. Edit your webhook and scroll to "Trigger events"
+3. Check the **Note Hook** checkbox
+4. Save the webhook
+
+This allows the bot to receive notifications when someone replies to discussion threads.
+
 ## Testing the Integration
 
 ### Test 1: Webhook URL Accessibility
@@ -579,6 +665,33 @@ In GitLab webhook settings, view recent deliveries:
    - Timestamp
 
 This is helpful for debugging signature or payload issues.
+
+### Test 7: Test Auto-Close Discussion Feature
+
+To test the automatic discussion resolution feature:
+
+1. **Create a test merge request** in your GitLab project
+2. **Wait for the bot to post review comments** on the MR
+3. **Reply to a discussion thread** with exactly "done" (any case)
+4. **Check the discussion status** - it should become resolved
+5. **View the bot server logs** for confirmation:
+   ```bash
+   docker logs -f review-bot | grep -i "discussion\|resolved"
+   ```
+
+Expected log entries:
+```
+INFO - Processing note event
+DEBUG - Processing note event
+INFO - Discussion resolved successfully
+```
+
+Common test scenarios:
+- Reply "done" to a review suggestion (should resolve)
+- Reply "Done" in uppercase (should resolve - case-insensitive)
+- Reply with whitespace "  done  " (should resolve - whitespace trimmed)
+- Reply "done" to a non-bot discussion (should skip - not bot-created)
+- Reply "not done" (should skip - doesn't match exactly "done")
 
 ## Troubleshooting
 
@@ -798,6 +911,89 @@ curl -H "Private-Token: $GITLAB_TOKEN" \
   "https://gitlab.com/api/v4/projects/PROJECT_ID/hooks/HOOK_ID/events"
 
 # Shows all recent webhook attempts and their responses
+```
+
+### Troubleshooting Auto-Close Discussion Feature
+
+#### Issue: Discussion Not Resolving When Replying "done"
+
+**Symptom:** Reply with "done" but discussion remains unresolved
+
+**Possible Causes and Solutions:**
+
+1. **Note Hook events not enabled**
+   - Verify in GitLab: Settings > Integrations > Webhooks
+   - Ensure "Note Hook" is checked in trigger events
+   - Test the webhook connection
+
+2. **BOT_USERNAME doesn't match bot's actual username**
+   ```bash
+   # Check your bot's GitLab username
+   # Then update .env file
+   BOT_USERNAME=actual-bot-username
+   # Restart the bot server
+   docker restart review-bot
+   ```
+
+3. **Reply text doesn't match exactly "done"**
+   - Must be exactly "done" (case-insensitive)
+   - Whitespace is trimmed automatically
+   - "done!" or "done." will NOT match
+   - Must be standalone, not part of longer text
+
+4. **Discussion not created by the bot**
+   - Bot only resolves discussions it created
+   - If manually created discussion, bot won't resolve it
+   - Check GitLab UI to see who created the discussion
+
+5. **Discussion already resolved**
+   - If discussion is already resolved, bot skips it
+   - Replying "done" won't have effect on resolved discussions
+
+6. **GITLAB_TOKEN lacks required permissions**
+   - Token needs `api` and `write_repository` scopes
+   - Test token permissions:
+   ```bash
+   curl -H "Private-Token: $GITLAB_TOKEN" \
+     https://gitlab.com/api/v4/user
+   ```
+
+#### Checking Discussion Resolution Logs
+
+Enable debug logging to see discussion processing:
+
+```bash
+# Set log level to DEBUG
+docker run -e LOG_LEVEL=DEBUG review-bot:latest
+
+# View logs with filtering
+docker logs -f review-bot | grep -i "note\|discussion\|resolve"
+```
+
+Look for entries like:
+```
+DEBUG - Processing note event
+DEBUG - Discussion ID found in payload
+DEBUG - Retrieved discussion details
+INFO - Discussion resolved successfully
+```
+
+#### Manual Discussion Resolution Test
+
+Create a test using the GitLab API:
+
+```bash
+# 1. Get a discussion ID from an MR
+PROJECT_ID=123
+MR_IID=45
+curl -H "Private-Token: $GITLAB_TOKEN" \
+  "https://gitlab.com/api/v4/projects/$PROJECT_ID/merge_requests/$MR_IID/discussions" | jq
+
+# 2. Manually resolve a discussion (for testing)
+DISCUSSION_ID="abc123def456"
+curl -X PUT -H "Private-Token: $GITLAB_TOKEN" \
+  "https://gitlab.com/api/v4/projects/$PROJECT_ID/merge_requests/$MR_IID/discussions/$DISCUSSION_ID" \
+  -d '{"resolved": true}'
 ```
 
 ## Security Considerations
