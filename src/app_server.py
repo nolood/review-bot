@@ -308,7 +308,10 @@ class AppServer:
         # Deduplication components
         self.commit_tracker: Optional[CommitTracker] = None
         self.comment_tracker: Optional[CommentTracker] = None
-        
+
+        # Bot username for discussion resolution
+        self.bot_username: Optional[str] = None
+
         # FastAPI app (only if available)
         self.app = None
         
@@ -411,6 +414,18 @@ class AppServer:
                 concurrent_limit=self.config.max_concurrent_reviews
             )
 
+            # Resolve bot_username once for consistency
+            bot_username = getattr(self.settings, 'bot_username', None) or os.getenv('BOT_USERNAME', 'review-bot')
+            self.bot_username = bot_username  # Store for use in webhook handlers
+
+            self.logger.info(
+                "Bot username configured",
+                extra={
+                    "bot_username": bot_username,
+                    "source": "settings" if getattr(self.settings, 'bot_username', None) else "env/default"
+                }
+            )
+
             # Initialize deduplication trackers
             if getattr(self.settings, 'deduplication_enabled', True) and CommitTracker:
                 self.commit_tracker = CommitTracker(ttl_seconds=86400)  # 24 hours
@@ -419,7 +434,7 @@ class AppServer:
                 gitlab_client = await self.client_manager.get_client("gitlab")
                 self.comment_tracker = CommentTracker(
                     gitlab_client=gitlab_client,
-                    bot_username=getattr(self.settings, 'bot_username', 'glm-review-bot')
+                    bot_username=bot_username
                 )
                 self.logger.info("Deduplication trackers initialized")
 
@@ -1182,7 +1197,7 @@ class AppServer:
                 )
 
             # Check if discussion was created by the bot
-            bot_username = getattr(self.settings, 'bot_username', None) or os.getenv('BOT_USERNAME', 'review-bot')
+            bot_username = getattr(self, 'bot_username', None) or getattr(self.settings, 'bot_username', None) or os.getenv('BOT_USERNAME', 'review-bot')
 
             try:
                 discussion = await gitlab_client.get_discussion(
@@ -1195,8 +1210,13 @@ class AppServer:
                 if notes:
                     first_author = notes[0].get("author", {}).get("username", "")
                     if first_author != bot_username:
-                        self.logger.debug(
-                            f"Discussion not created by bot (author: {first_author})"
+                        self.logger.info(
+                            f"Discussion not created by bot, skipping resolution",
+                            extra={
+                                "discussion_creator": first_author,
+                                "expected_bot": bot_username,
+                                "discussion_id": discussion_id
+                            }
                         )
                         return JSONResponse(
                             status_code=200,
